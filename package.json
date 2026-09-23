@@ -4,7 +4,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "install:all": "npm install && npm --prefix client install && npm --prefix server install",
+    "setup": "npm --prefix client install --include=dev --omit= && npm --prefix client run build && npm --prefix server install --include=dev --omit=",
+    "install:all": "npm --prefix client install --include=dev --omit= && npm --prefix server install --include=dev --omit=",
     "build": "npm --prefix client run build",
     "start": "npm --prefix server run start",
     "dev": "npm --prefix client run dev & npm --prefix server run dev"
