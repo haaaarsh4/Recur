@@ -1,3 +1,4 @@
+import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 import { Low } from "lowdb";
@@ -6,6 +7,11 @@ import { profileTask } from "./embeddings.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const file = path.join(__dirname, "..", "data", "db.json");
+// db.json is gitignored, so fresh deploys (Render, Railway) do not have the
+// data directory at all. lowdb writes through a .tmp sibling file and would
+// crash with ENOENT on the first save. Create the directory before anything
+// tries to write.
+fs.mkdirSync(path.dirname(file), { recursive: true });
 
 const defaultData = {
   users: [],   // { id, email, passwordHash, name, createdAt }

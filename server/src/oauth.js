@@ -11,7 +11,9 @@ const COOKIE_OPTS = {
 };
 
 const CLIENT_ORIGIN = process.env.CLIENT_ORIGIN || "http://localhost:5173";
-const SERVER_ORIGIN = process.env.SERVER_ORIGIN || `http://localhost:${process.env.PORT || 8787}`;
+// OAuth callbacks must point at the public origin when deployed. CLIENT_ORIGIN
+// is required in production anyway (CORS), so it is the safest default here.
+const SERVER_ORIGIN = process.env.SERVER_ORIGIN || process.env.CLIENT_ORIGIN || `http://localhost:${process.env.PORT || 8787}`;
 const OAUTH_COOKIE = "oauth_state";
 
 function providerConfig(provider) {
