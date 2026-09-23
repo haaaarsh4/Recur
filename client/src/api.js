@@ -28,6 +28,7 @@ export const api = {
   getChat: (id) => request(`/chats/${id}`),
   deleteChat: (id) => request(`/chats/${id}`, { method: "DELETE" }),
   sendMessage: (id, text, tier) => request(`/chats/${id}/messages`, { method: "POST", body: { text, tier } }),
+  retryMessage: (id, tier) => request(`/chats/${id}/retry`, { method: "POST", body: { tier } }),
   resolveOffer: (chatId, messageId, action, tier) =>
     request(`/chats/${chatId}/offers/${messageId}/resolve`, { method: "POST", body: { action, tier } }),
 
@@ -37,6 +38,7 @@ export const api = {
 
   getIntegration: () => request("/integrations"),
   saveIntegration: (body) => request("/integrations", { method: "PUT", body }),
-  deleteIntegration: () => request("/integrations", { method: "DELETE" }),
+  setActiveIntegration: (id) => request("/integrations/active", { method: "POST", body: { id } }),
+  deleteIntegration: (id) => request(id ? `/integrations/${id}` : "/integrations", { method: "DELETE" }),
   testIntegration: (body) => request("/integrations/test", { method: "POST", body }),
 };

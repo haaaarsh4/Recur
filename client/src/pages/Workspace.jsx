@@ -22,18 +22,33 @@ export default function Workspace() {
   const [modelOpen, setModelOpen] = useState(false);
   const [chats, setChats] = useState([]);
   const [activeChat, setActiveChat] = useState(null);
+  const [activeSource, setActiveSource] = useState(null);
+  const [drafts, setDrafts] = useState({});
   const [tools, setTools] = useState([]);
   const [stats, setStats] = useState(null);
   const [error, setError] = useState("");
   const [authModal, setAuthModal] = useState(null); // null | "login" | "register"
+  const [authError, setAuthError] = useState("");
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [notifOpen, setNotifOpen] = useState(false);
+  const [chatFading, setChatFading] = useState(false);
+  const fadeRef = useRef(0);
   const notifRef = useRef(null);
 
   useEffect(() => {
     function onDoc(e) { if (notifRef.current && !notifRef.current.contains(e.target)) setNotifOpen(false); }
     document.addEventListener("click", onDoc);
     return () => document.removeEventListener("click", onDoc);
+  }, []);
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const message = params.get("auth_error");
+    if (message) {
+      setAuthError(message);
+      setAuthModal("login");
+      window.history.replaceState({}, document.title, window.location.pathname);
+    }
   }, []);
 
   const refreshChats = useCallback(() => {
@@ -53,20 +68,44 @@ export default function Workspace() {
     refreshStats();
   }, [loading, user, refreshChats, refreshTools, refreshStats]);
 
-  async function openChat(id) {
-    const chat = await api.getChat(id);
-    setActiveChat(chat);
+  // Chat switching uses one single opacity fade: the current view fades out,
+  // content swaps while fully transparent, then the new view fades in. Because
+  // there is exactly one animation on one element, nothing can restart or drop
+  // in mid-flight — the old flash-and-reanimate glitch came from stacking a
+  // second animation on top of a running one.
+  async function swapChat(load, source) {
+    const fadeId = ++fadeRef.current;
     setView("chat");
     setMobileNavOpen(false);
+    setChatFading(true);
+    const [chat] = await Promise.all([load(), wait(FADE_OUT_MS)]);
+    if (fadeId !== fadeRef.current) return; // a newer switch superseded this one
+    if (chat) {
+      setActiveChat(chat);
+      setActiveSource(source);
+    } else {
+      setActiveChat(null);
+      setActiveSource(null);
+    }
+    setChatFading(false);
+  }
+  function openChat(id, source = "history") {
+    if (activeChat?.id === id && activeSource === source && !chatFading) return;
+    swapChat(() => api.getChat(id), source).catch((e) => {
+      if (e) setError(e.message || "Could not open that chat.");
+      setChatFading(false);
+    });
   }
   function newChat() {
-    setActiveChat(null);
-    setView("chat");
-    setMobileNavOpen(false);
+    setDrafts((current) => ({ ...current, __new__: "" }));
+    swapChat(() => Promise.resolve(null), null).catch(() => setChatFading(false));
   }
   async function deleteChat(id) {
     await api.deleteChat(id);
-    if (activeChat?.id === id) setActiveChat(null);
+    if (activeChat?.id === id) {
+      setActiveChat(null);
+      setActiveSource(null);
+    }
     refreshChats();
   }
 
@@ -90,6 +129,21 @@ export default function Workspace() {
     }
   }
 
+  async function retryLast() {
+    if (!activeChat) return;
+    setError("");
+    try {
+      const { chat: updated } = await api.retryMessage(activeChat.id, tier);
+      setActiveChat(updated);
+      refreshChats();
+      refreshTools();
+      refreshStats();
+    } catch (e) {
+      setError(e.message);
+      if (e.data?.chat) setActiveChat(e.data.chat);
+    }
+  }
+
   async function resolveOffer(messageId, action) {
     setError("");
     try {
@@ -110,6 +164,12 @@ export default function Workspace() {
     refreshStats();
   }
 
+  async function handleLogout() {
+    await logout();
+    setView("chat");
+    setAuthModal("login");
+  }
+
   return (
     <div className="app">
       <Sidebar
@@ -120,11 +180,12 @@ export default function Workspace() {
         onTierChange={setTier}
         chats={chats}
         activeId={activeChat?.id}
+        activeSource={activeSource}
         onSelectChat={openChat}
         onNewChat={newChat}
         onDeleteChat={deleteChat}
         user={user}
-        onLogout={logout}
+        onLogout={handleLogout}
         onOpenAuth={setAuthModal}
         mobileOpen={mobileNavOpen}
         onCloseMobile={() => setMobileNavOpen(false)}
@@ -157,20 +218,21 @@ export default function Workspace() {
         {view === "chat" ? (
           <ChatThread
             chat={activeChat}
+            chatFading={chatFading}
+            draft={drafts[activeChat?.id || "__new__"] || ""}
+            onDraftChange={(value) => setDrafts((current) => ({ ...current, [activeChat?.id || "__new__"]: value }))}
             user={user}
-            toolsCount={tools.length}
-            stats={stats}
             tiers={TIERS}
             tier={tier}
             onTierChange={setTier}
             modelOpen={modelOpen}
             onModelOpenChange={setModelOpen}
             onSend={sendMessage}
+            onRetry={retryLast}
             onResolveOffer={resolveOffer}
-            onOpenTools={() => setView("tools")}
           />
         ) : view === "tools" ? (
-          <ToolsPanel tools={tools} stats={stats} onReset={resetLibrary} user={user} onRequireAuth={setAuthModal} />
+          <ToolsPanel tools={tools} stats={stats} onReset={resetLibrary} />
         ) : view === "home" ? (
           <HomeView
             user={user}
@@ -185,7 +247,13 @@ export default function Workspace() {
         )}
       </main>
 
-      {authModal && <AuthModal initialMode={authModal} onClose={() => setAuthModal(null)} />}
+      {authModal && <AuthModal initialMode={authModal} initialError={authError} onClose={() => { setAuthModal(null); setAuthError(""); }} />}
     </div>
   );
+}
+
+const FADE_OUT_MS = 180;
+
+function wait(ms) {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
 }

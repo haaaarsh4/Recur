@@ -1,22 +1,33 @@
-import React, { useEffect, useState } from "react";
-import { Check, Eye, EyeOff, Sparkles } from "lucide-react";
+import React, { useEffect, useMemo, useState } from "react";
+import { Check, Eye, EyeOff, Plus, Trash2 } from "lucide-react";
 import { api } from "../api.js";
 
-const PROVIDERS = [
-  { id: "ollama", label: "Ollama Local", hint: "No API key required", models: ["qwen2.5:0.5b", "smollm2:135m-instruct-q8_0", "llama3.1:8b-instruct-q4_K_M"] },
-  { id: "openai", label: "OpenAI", hint: "Keys start with sk-" },
-  { id: "anthropic", label: "Anthropic", hint: "Keys start with sk-ant-" },
+// The server is the source of truth for optional hosted providers. This local
+// fallback exists only while the integrations request is unavailable.
+const FALLBACK_PROVIDERS = [
+  { id: "ollama", label: "Ollama Local", protocol: "ollama", hint: "No API key required", baseUrl: "http://127.0.0.1:11434", models: ["qwen2.5:0.5b", "llama3.1:8b-instruct-q4_K_M", "smollm2:135m-instruct-q8_0"], defaultModel: "qwen2.5:0.5b" },
 ];
+
+const emptyForm = {
+  id: "",
+  name: "",
+  provider: "ollama",
+  protocol: "ollama",
+  baseUrl: "http://127.0.0.1:11434",
+  model: "qwen2.5:0.5b",
+  apiKey: "",
+};
 
 export default function IntegrationsPanel({ user, onRequireAuth }) {
   const [status, setStatus] = useState(null);
   const [loading, setLoading] = useState(true);
-  const [provider, setProvider] = useState("ollama");
-  const [model, setModel] = useState("qwen2.5:0.5b");
-  const [key, setKey] = useState("");
+  const [form, setForm] = useState(emptyForm);
   const [showKey, setShowKey] = useState(false);
   const [busy, setBusy] = useState("");
   const [notice, setNotice] = useState(null);
+
+  const providers = status?.providers?.length ? status.providers : FALLBACK_PROVIDERS;
+  const selectedProvider = useMemo(() => providers.find((item) => item.id === form.provider) || providers[0], [providers, form.provider]);
 
   useEffect(() => {
     if (!user) {
@@ -25,159 +36,185 @@ export default function IntegrationsPanel({ user, onRequireAuth }) {
       return;
     }
     setLoading(true);
-    api.getIntegration().then((s) => {
-      setStatus(s);
-      if (s.provider) setProvider(s.provider);
-      if (s.model) setModel(s.model);
-    }).catch(() => {}).finally(() => setLoading(false));
+    api.getIntegration().then((data) => {
+      setStatus(data);
+      const active = data.connections?.find((item) => item.id === data.activeId) || data.connections?.[0];
+      if (active) loadConnection(active, data.providers || FALLBACK_PROVIDERS);
+      else setForm({ ...emptyForm });
+    }).catch((error) => setNotice({ kind: "error", text: error.message })).finally(() => setLoading(false));
   }, [user]);
 
+  function loadConnection(connection, providerList = providers) {
+    const provider = providerList.find((item) => item.id === connection.provider) || providerList[0];
+    setForm({
+      id: connection.id,
+      name: connection.name || provider.label,
+      provider: connection.provider,
+      protocol: connection.protocol || provider.protocol,
+      baseUrl: connection.baseUrl || provider.baseUrl || "",
+      model: connection.model || provider.defaultModel || "",
+      apiKey: "",
+    });
+    setShowKey(false);
+    setNotice(null);
+  }
+
+  function newConnection() {
+    setForm({ ...emptyForm });
+    setShowKey(false);
+    setNotice(null);
+  }
+
+  function changeProvider(providerId) {
+    const provider = providers.find((item) => item.id === providerId) || FALLBACK_PROVIDERS[0];
+    setForm((current) => ({
+      ...current,
+      provider: provider.id,
+      protocol: provider.protocol,
+      baseUrl: provider.baseUrl || "",
+      model: provider.defaultModel || "",
+      name: current.id ? current.name : provider.label,
+      apiKey: "",
+    }));
+    setNotice(null);
+  }
+
+  function update(field, value) {
+    setForm((current) => ({ ...current, [field]: value }));
+  }
+
   async function save() {
-    if (provider !== "ollama" && !key.trim()) {
-      setNotice({ kind: "error", text: "Paste your API key first." });
-      return;
-    }
     setBusy("save");
     setNotice(null);
     try {
-      const s = await api.saveIntegration({ provider, model: provider === "ollama" ? model : undefined, apiKey: provider === "ollama" ? "" : key.trim() });
-      setStatus(s);
-      setKey("");
-      setShowKey(false);
-      const label = PROVIDERS.find((p) => p.id === s.provider)?.label || s.provider;
-      setNotice({ kind: "ok", text: s.provider === "ollama" ? "Ollama is connected. Recur will use your local model without an API key." : "Key saved. Your chats now run on your own " + label + " account." });
-    } catch (e) {
-      setNotice({ kind: "error", text: e.message });
+      const data = await api.saveIntegration(form);
+      setStatus(data);
+      const active = data.connections.find((item) => item.id === data.activeId);
+      if (active) loadConnection(active, data.providers);
+      setNotice({ kind: "ok", text: "Connection saved. Recur can now use this provider." });
+    } catch (error) {
+      setNotice({ kind: "error", text: error.message });
     } finally {
       setBusy("");
     }
   }
 
   async function test() {
-    if (provider !== "ollama" && !key.trim()) {
-      setNotice({ kind: "error", text: "Paste your API key first." });
-      return;
-    }
     setBusy("test");
     setNotice(null);
     try {
-      const r = await api.testIntegration({ provider, model: provider === "ollama" ? model : undefined, apiKey: provider === "ollama" ? "" : key.trim() });
-      setNotice(r.ok ? { kind: "ok", text: "That key works. The provider accepted it." } : { kind: "error", text: r.error || "That key did not pass the test." });
-    } catch (e) {
-      setNotice({ kind: "error", text: e.message });
+      const result = await api.testIntegration(form);
+      setNotice(result.ok ? { kind: "ok", text: "The provider accepted this connection." } : { kind: "error", text: result.error || "The provider rejected this connection." });
+    } catch (error) {
+      setNotice({ kind: "error", text: error.message });
     } finally {
       setBusy("");
     }
   }
 
-  async function remove() {
+  async function activate(connection) {
+    setBusy("active");
+    try {
+      const data = await api.setActiveIntegration(connection.id);
+      setStatus(data);
+      const active = data.connections.find((item) => item.id === data.activeId);
+      if (active) loadConnection(active, data.providers);
+    } catch (error) {
+      setNotice({ kind: "error", text: error.message });
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function remove(connection) {
     setBusy("remove");
     setNotice(null);
     try {
-      const s = await api.deleteIntegration();
-      setStatus(s);
-      setNotice({ kind: "ok", text: "Key removed. Chat falls back to the server's own key when one exists." });
-    } catch (e) {
-      setNotice({ kind: "error", text: e.message });
+      const data = await api.deleteIntegration(connection.id);
+      setStatus(data);
+      const active = data.connections.find((item) => item.id === data.activeId);
+      if (active) loadConnection(active, data.providers);
+      else newConnection();
+      setNotice({ kind: "ok", text: "Connection removed." });
+    } catch (error) {
+      setNotice({ kind: "error", text: error.message });
     } finally {
       setBusy("");
     }
   }
 
-  const selectedProvider = PROVIDERS.find((p) => p.id === provider) || PROVIDERS[0];
+  if (!user) {
+    return (
+      <section className="tools-view integrations-view">
+        <div className="tv-inner intg-inner">
+          <IntegrationHeading />
+          <div className="intg-guest-card">
+            <div className="intg-guest-copy">
+              <span className="intg-card-kicker">ACCOUNT CONNECTIONS</span>
+              <div className="intg-guest-title-row">
+                <h3>Sign in to connect API providers.</h3>
+                <button className="intg-btn solid intg-login-action" type="button" onClick={() => onRequireAuth?.("login")} aria-label="Log in or sign up to add an API connection">Log in or join</button>
+              </div>
+              <p>Chat remains available as a guest. Sign in to save private API connections and keep your provider choices with your account.</p>
+            </div>
+          </div>
+          <div className="intg-guest-explain" aria-label="Connection benefits">
+            <div><span>01</span><b>Your key stays private</b><p>API keys are encrypted in server storage and never shown again after saving.</p></div>
+            <div><span>02</span><b>It powers the whole loop</b><p>Your selected provider powers replies, pattern detection, tool creation, and reusable tool runs.</p></div>
+            <div><span>03</span><b>You can remove it anytime</b><p>Delete a saved connection whenever you want and switch to another provider.</p></div>
+          </div>
+        </div>
+      </section>
+    );
+  }
 
   return (
     <section className="tools-view integrations-view">
       <div className="tv-inner intg-inner">
-        <div className="intg-heading">
-          <div>
-            <span className="intg-eyebrow"><Sparkles /> YOUR CONNECTIONS</span>
-            <h2>Integrations</h2>
-            <p className="sub">Connect your own model provider and keep every Recur conversation powered by your account.</p>
-          </div>
-        </div>
-
-        {!user ? (
-          <div className="intg-login-card">
-            <div>
-              <span className="intg-card-kicker">GUEST BROWSING</span>
-              <h3>Chat works without an account.</h3>
-              <p>You can chat right away with the server's shared provider. To connect your own API key and keep your history forever, create a free account.</p>
-            </div>
-            <button className="intg-btn solid" type="button" onClick={() => onRequireAuth("login")}>Log in or join</button>
-          </div>
-        ) : (
-          <>
-            <div className="intg-connection-card">
-              <div className="intg-card-topline">
-                <div>
-                  <span className="intg-card-kicker">ACTIVE CONNECTION</span>
-                  <h3>{status?.connected ? "Your provider is connected" : "Connect a model provider"}</h3>
-                </div>
-                <span className={"intg-connection-state" + (status?.connected ? " connected" : "")}>
-                  <span className="intg-dot" /> {status?.connected ? "Connected" : "Not connected"}
-                </span>
+        <IntegrationHeading />
+        <div className="intg-private-note"><span>Private API connections</span><small>Keys are encrypted on the server and never shown again after saving.</small></div>
+        <div className="intg-connections-layout">
+          <aside className="intg-connections-list">
+            <div className="intg-list-top"><span className="intg-card-kicker">SAVED CONNECTIONS</span><button type="button" onClick={newConnection} aria-label="Add API connection"><Plus /></button></div>
+            {loading ? <div className="intg-list-empty">Loading connections...</div> : status?.connections?.length ? status.connections.map((connection) => (
+              <div key={connection.id} className={"intg-connection-item" + (connection.id === status.activeId ? " active" : "") }>
+                <button type="button" className="intg-connection-select" onClick={() => loadConnection(connection)}>
+                  <span className="provider-logo">{connection.name.slice(0, 1).toUpperCase()}</span>
+                  <span><b>{connection.name}</b><small>{connection.model}</small></span>
+                  {connection.id === status.activeId && <Check />}
+                </button>
+                <button type="button" className="intg-connection-delete" onClick={() => remove(connection)} aria-label={`Remove ${connection.name}`}><Trash2 /></button>
               </div>
-              {loading ? <p className="intg-muted">Checking your saved connection...</p> : status?.connected ? (
-                <p className="intg-connection-copy">Using <b>{PROVIDERS.find((p) => p.id === status.provider)?.label || status.provider}</b>{status.provider === "ollama" ? ` with ${status.model}. No API key is required.` : ` with a key ${status.keyPreview}.`} Saved {status.updatedAt ? new Date(status.updatedAt).toLocaleString() : "recently"}.</p>
-              ) : (                  <p className="intg-connection-copy">Choose Ollama Local for free local inference, or choose a hosted provider and add its API key.</p>
+            )) : <div className="intg-list-empty">No API connections yet. Add one to get started.</div>}
+            <button className="intg-add-connection" type="button" onClick={newConnection}><Plus /> Add API connection</button>
+          </aside>
 
+          <div className="intg-editor">
+            <div className="intg-editor-heading"><div><span className="intg-card-kicker">{form.id ? "EDIT CONNECTION" : "NEW CONNECTION"}</span><h3>{form.id ? form.name : "Add an API provider"}</h3></div>{form.id && <span className="intg-active-label">{status?.activeId === form.id ? "Active" : "Saved"}</span>}</div>
+            <div className="intg-form-grid">
+              <label className="intg-field full"><span>Connection name</span><input value={form.name} onChange={(e) => update("name", e.target.value)} placeholder="My OpenAI account" /></label>
+              <label className="intg-field full"><span>AI provider</span><select value={form.provider} onChange={(e) => changeProvider(e.target.value)}>{providers.map((provider) => <option key={provider.id} value={provider.id}>{provider.label}</option>)}</select></label>
+              {selectedProvider.protocol === "ollama" ? (
+                <div className="intg-field"><span>Authentication</span><div className="intg-local-note">Ollama runs locally. No API key is required.</div></div>
+              ) : (
+                <label className="intg-field"><span>API key <em>{selectedProvider.hint}</em></span><div className="intg-secret-field"><input type={showKey ? "text" : "password"} value={form.apiKey} onChange={(e) => update("apiKey", e.target.value)} placeholder={form.id ? "Saved securely. Enter a new key to replace it." : "Paste your API key"} autoComplete="off" /><button type="button" onClick={() => setShowKey((value) => !value)} aria-label={showKey ? "Hide API key" : "Show API key"}>{showKey ? <EyeOff /> : <Eye />}</button></div></label>
               )}
+              <label className="intg-field"><span>Model</span>{selectedProvider.custom ? <input value={form.model} onChange={(e) => update("model", e.target.value)} placeholder="provider-model-name" /> : <select value={form.model} onChange={(e) => update("model", e.target.value)}>{(selectedProvider.models || []).map((model) => <option key={model} value={model}>{model}</option>)}</select>}</label>
+              {selectedProvider.custom && <>
+                <label className="intg-field"><span>API format</span><select value={form.protocol} onChange={(e) => update("protocol", e.target.value)}><option value="openai">OpenAI-compatible</option><option value="anthropic">Anthropic Messages</option><option value="gemini">Google Gemini</option></select></label>
+                <label className="intg-field"><span>Base URL</span><input value={form.baseUrl} onChange={(e) => update("baseUrl", e.target.value)} placeholder="https://api.example.com/v1" /></label>
+              </>}
             </div>
-
-            {!loading && (
-              <div className="intg-builder">
-                <aside className="intg-provider-rail">
-                  <span className="intg-card-kicker">PROVIDER</span>
-                  <div className="intg-provider-list">
-                    {PROVIDERS.map((p) => (
-                      <button key={p.id} type="button" className={"intg-provider" + (provider === p.id ? " selected" : "")} onClick={() => { setProvider(p.id); setNotice(null); }}>
-                        <span className="provider-logo">{p.label[0]}</span>
-                        <span><b>{p.label}</b><small>{p.id === "ollama" ? "Runs on this computer" : p.id === "openai" ? "GPT models" : "Claude models"}</small></span>
-                        {provider === p.id && <Check className="provider-check" />}
-                      </button>
-                    ))}
-                  </div>
-                  <p className="intg-rail-note">Your key is used for replies, pattern detection, tool creation, and tool runs.</p>
-                </aside>
-
-                <div className="intg-key-panel">
-                  <div className="intg-card-kicker">{provider === "ollama" ? "LOCAL MODEL" : "API KEY"}</div>
-                  <h3>{provider === "ollama" ? "Use Ollama without a key" : `Connect ${selectedProvider.label}`}</h3>
-                  <p className="intg-form-copy">{provider === "ollama" ? "Recur will call Ollama on this computer. Choose a model that is already installed." : "Your key is encrypted in transit, masked after saving, and used only for your workspace."}</p>
-                  {provider === "ollama" ? (
-                    <label className="intg-model-select-label">Installed model
-                      <select className="intg-model-select" value={model} onChange={(e) => setModel(e.target.value)}>
-                        {selectedProvider.models.map((item) => <option key={item} value={item}>{item}</option>)}
-                      </select>
-                    </label>
-                  ) : (
-                    <div className="intg-keyrow">
-                      <input type={showKey ? "text" : "password"} value={key} onChange={(e) => setKey(e.target.value)} placeholder={selectedProvider.hint} autoComplete="off" spellCheck={false} />
-                      <button type="button" className="intg-eye" onClick={() => setShowKey((v) => !v)} aria-label={showKey ? "Hide key" : "Show key"}>{showKey ? <EyeOff /> : <Eye />}</button>
-                    </div>
-                  )}
-                  <div className="intg-actions">
-                    <button type="button" className="intg-btn" disabled={busy !== ""} onClick={test}>{busy === "test" ? "Testing..." : provider === "ollama" ? "Test Ollama" : "Test key"}</button>
-                    <button type="button" className="intg-btn solid" disabled={busy !== ""} onClick={save}>{busy === "save" ? "Saving..." : provider === "ollama" ? "Use local model" : "Save connection"}</button>
-                    {status?.connected && <button type="button" className="intg-btn danger" disabled={busy !== ""} onClick={remove}>{busy === "remove" ? "Removing..." : "Remove key"}</button>}
-                  </div>
-                  {notice && <div className={"intg-notice " + notice.kind}>{notice.text}</div>}
-                </div>
-              </div>
-            )}
-          </>
-        )}
-
-        <div className="intg-explain">
-          <div className="intg-explain-heading"><span className="intg-card-kicker">GOOD TO KNOW</span><h3>How your connection works</h3></div>
-          <div className="intg-explain-grid">
-            <div><span className="explain-index">01</span><b>Your key stays yours</b><p>The full key is never returned to the interface. Only a masked ending is shown after saving.</p></div>
-            <div><span className="explain-index">02</span><b>It powers the whole loop</b><p>Replies, pattern checks, tool creation, and reusable tool runs all use your selected provider.</p></div>
-            <div><span className="explain-index">03</span><b>You can remove it anytime</b><p>Delete the saved key whenever you want. Recur then uses the server fallback, if one is configured.</p></div>
+            <p className="intg-editor-help">The API key is used only by the server for this account. Recur never sends it back to the browser or displays the full value after saving.</p>
+            {notice && <div className={"intg-notice " + notice.kind}>{notice.text}</div>}
+            <div className="intg-editor-actions"><button type="button" className="intg-btn" disabled={Boolean(busy)} onClick={test}>{busy === "test" ? "Testing..." : "Test connection"}</button><button type="button" className="intg-btn solid" disabled={Boolean(busy)} onClick={save}>{busy === "save" ? "Saving..." : "Save connection"}</button>{form.id && status?.activeId !== form.id && <button type="button" className="intg-btn" disabled={Boolean(busy)} onClick={() => activate({ id: form.id })}>{busy === "active" ? "Activating..." : "Make active"}</button>}</div>
           </div>
         </div>
       </div>
     </section>
   );
+}
+
+function IntegrationHeading() {
+  return <div className="intg-heading"><div><h2>Integrations</h2><p className="sub">Connect the AI providers you already use. Keep several connections saved and choose which one powers Recur.</p></div></div>;
 }

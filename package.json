@@ -1,0 +1,15 @@
+{
+  "name": "recur-workspace",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "install:all": "npm install && npm --prefix client install && npm --prefix server install",
+    "build": "npm --prefix client run build",
+    "start": "npm --prefix server run start",
+    "dev": "npm --prefix client run dev & npm --prefix server run dev"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

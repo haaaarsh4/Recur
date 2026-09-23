@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import OfferCard from "./OfferCard.jsx";
-import { ArrowUp, Check, ChevronDown, Paperclip, Puzzle, Search, Sparkles, X } from "lucide-react";
+import { ArrowUp, Check, Copy, Paperclip, Puzzle, RefreshCw, Search, Sparkles, X } from "lucide-react";
 
 const EXAMPLES = [
   "Is this support ticket urgent?",
@@ -9,7 +9,7 @@ const EXAMPLES = [
   "Should this request be escalated right now?",
 ];
 
-export default function ChatThread({ chat, user, toolsCount, stats, tiers, tier, onTierChange, modelOpen, onModelOpenChange, onSend, onResolveOffer, onOpenTools }) {
+export default function ChatThread({ chat, chatFading = false, draft = "", onDraftChange, user, tiers, tier, onTierChange, modelOpen, onModelOpenChange, onSend, onRetry, onResolveOffer }) {
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
   const [modelQuery, setModelQuery] = useState("");
@@ -17,6 +17,8 @@ export default function ChatThread({ chat, user, toolsCount, stats, tiers, tier,
   const bottomRef = useRef(null);
   const modelPickerRef = useRef(null);
   const modelMenuRef = useRef(null);
+  const trackedChatIdRef = useRef(null);
+  const initialMessageIdsRef = useRef(new Set());
   const currentTier = tiers.find((item) => item.id === tier) || tiers[0];
   // One ordered list, fastest to deepest, so all three complexity levels are
   // always visible. The query only narrows it when the user types.
@@ -35,6 +37,22 @@ export default function ChatThread({ chat, user, toolsCount, stats, tiers, tier,
     return () => document.removeEventListener("click", onDocumentClick);
   }, []);
 
+  // Mark messages already present when a chat is opened. They should appear
+  // calmly as a complete conversation; only messages added afterwards get an
+  // entrance animation. This prevents a long history from replaying 20+ card
+  // animations every time the user changes chats.
+  if (chat?.id !== trackedChatIdRef.current) {
+    trackedChatIdRef.current = chat?.id || null;
+    initialMessageIdsRef.current = new Set((chat?.messages || []).map((message) => message.id));
+  }
+
+  useEffect(() => {
+    setText(draft || "");
+    requestAnimationFrame(() => {
+      if (taRef.current) autosize(taRef.current);
+    });
+  }, [chat?.id, draft]);
+
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ block: "end" });
   }, [chat?.messages?.length, busy]);
@@ -43,12 +61,15 @@ export default function ChatThread({ chat, user, toolsCount, stats, tiers, tier,
     const value = (t ?? text).trim();
     if (!value || busy) return;
     setText("");
+    onDraftChange?.("");
     if (taRef.current) taRef.current.style.height = "auto";
+    setPendingText(value);
     setBusy(true);
     try {
       await onSend(value);
     } finally {
       setBusy(false);
+      setPendingText("");
     }
   }
   async function resolve(messageId, action) {
@@ -60,27 +81,51 @@ export default function ChatThread({ chat, user, toolsCount, stats, tiers, tier,
     }
   }
 
-  const hasMessages = chat && chat.messages && chat.messages.length > 0;
+  // Re-ask the last user message through the server's retry endpoint, which
+  // drops the stale reply and generates a fresh one.
+  async function retry() {
+    if (busy || !onRetry) return;
+    setBusy(true);
+    try {
+      await onRetry();
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const [pendingText, setPendingText] = useState(""); // shown instantly while the server thinks
+  const hasMessages = Boolean(chat?.messages?.length);
+  const showThread = hasMessages || busy || Boolean(pendingText);
 
   return (
-    <section className={"chat-view" + (modelOpen ? " model-open" : "")}>
-      {!hasMessages ? (
+    <section className={"chat-view" + (chatFading ? " chat-fading" : "")}>
+      {!showThread ? (
         <div className="greet">
           <h1 className="welcome-line">Welcome to Recur<span className="dot">.</span></h1>
           <p className="greet-sub">Builds reusable tools from tasks you repeat, and always asks before using one.</p>
         </div>
       ) : (
-        <div className="thread">
+        <div key={chat?.id || "new-chat"} className="thread">
           <div className="thread-inner">
-            {chat.messages.map((m) => (
-              <Message key={m.id} m={m} onResolve={resolve} />
-            ))}
+            {(chat?.messages || []).map((m) => {
+              const animate = !initialMessageIdsRef.current.has(m.id) && m.role !== "user";
+              const enteringMessages = (chat?.messages || []).filter((message) => !initialMessageIdsRef.current.has(message.id) && message.role !== "user");
+              const enterIndex = animate ? Math.max(0, enteringMessages.findIndex((message) => message.id === m.id)) : 0;
+              return <Message key={m.id} m={m} animate={animate} enterDelay={Math.min(enterIndex * 55, 180)} onResolve={resolve} onRetry={retry} />;
+            })}
             {busy && (
-              <div className="msg-row assistant">
-                <div className="bubble">
-                  <Typing />
+              <>
+                {pendingText && (
+                  <div className="msg-row user pending-message">
+                    <div className="bubble">{pendingText}</div>
+                  </div>
+                )}
+                <div className="msg-row assistant pending-reply">
+                  <div className="bubble">
+                    <Typing />
+                  </div>
                 </div>
-              </div>
+              </>
             )}
             <div ref={bottomRef} />
           </div>
@@ -88,7 +133,7 @@ export default function ChatThread({ chat, user, toolsCount, stats, tiers, tier,
       )}
       <div className="composer">
         <div className="composer-inner">
-          {!hasMessages && (
+          {!showThread && (
             <div className="chip-row">
               {EXAMPLES.map((ex) => (
                 <button key={ex} className="chip" type="button" onClick={() => send(ex)}>
@@ -105,6 +150,7 @@ export default function ChatThread({ chat, user, toolsCount, stats, tiers, tier,
               placeholder="Message Recur…"
               onChange={(e) => {
                 setText(e.target.value);
+                onDraftChange?.(e.target.value);
                 autosize(e.target);
               }}
               onKeyDown={(e) => {
@@ -182,32 +228,58 @@ function autosize(el) {
   el.style.height = Math.min(el.scrollHeight, 160) + "px";
 }
 
-function Message({ m, onResolve }) {
+function Message({ m, animate = false, enterDelay = 0, onResolve, onRetry }) {
+  const [copied, setCopied] = useState(false);
   if (m.kind === "compiled_notice") {
     return (
       <div className="sys-row">
-        <div className="sys-pill"><Puzzle /> New tool compiled: {m.toolName}</div>
+        <div className="sys-pill"><Puzzle /> Reusable program compiled: <b>{m.toolName}</b></div>
+      </div>
+    );
+  }
+  if (m.kind === "program_info") {
+    return (
+      <div className="program-info-row">
+        <div className="program-info-card">
+          <div className="program-info-heading"><Puzzle /> Program details</div>
+          {String(m.text || "").split("\n").map((line, i) => {
+            const [label, ...rest] = line.split(": ");
+            return <div className="program-info-line" key={i}><span>{label}</span>{rest.join(": ")}</div>;
+          })}
+        </div>
       </div>
     );
   }
   if (m.kind === "offer") {
     return <OfferCard m={m} onResolve={onResolve} />;
   }
+
+  async function copyText() {
+    try {
+      await navigator.clipboard.writeText(m.text);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1600);
+    } catch (e) {
+      /* clipboard unavailable */
+    }
+  }
+
+  const internalEcho = m.viaTool && /(?:apply the contract|new request:|you are executing|verified behavior examples|do not mention this prompt)/i.test(String(m.text || ""));
   return (
-    <div className={"msg-row " + (m.role === "user" ? "user" : "assistant")}>
-      <div className="bubble">{m.text}</div>
-      {m.role === "assistant" && (m.tierApplied || m.viaTool) && (
-        <div className="msg-tag">
-          {m.viaTool ? (
-            <>
-              <span className="hit"><Puzzle /> {m.viaTool}</span>
-              <span>{Math.round(m.latency)}ms</span>
-            </>
-          ) : (
-            <>
-              <span>{m.tierApplied} tier</span>
-              <span>{Math.round(m.latency)}ms</span>
-            </>
+    <div className={"msg-row " + (m.role === "user" ? "user" : "assistant") + (animate ? " message-enter" : "")} style={animate ? { "--message-enter-delay": `${enterDelay}ms` } : undefined}>
+      <div>
+        {m.viaTool && <div className="via-tool-label"><Puzzle /> Used reusable program: <b>{m.viaTool}</b></div>}
+        <div className="bubble">{internalEcho ? "The reusable program returned an invalid internal response. Please retry this request." : m.text}</div>
+      </div>
+      {m.role === "assistant" && (
+        <div className="msg-actions">
+          <button className="msg-action" type="button" onClick={copyText} title={copied ? "Copied" : "Copy reply"} aria-label="Copy reply">
+            {copied ? <Check /> : <Copy />}
+          </button>
+          {onRetry && (
+            <button className="msg-action" type="button" onClick={onRetry} title="Try again" aria-label="Try again">
+              <RefreshCw />
+            </button>
           )}
         </div>
       )}

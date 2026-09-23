@@ -1,8 +1,8 @@
 import React, { useState } from "react";
-import { ArrowLeft, Eye, EyeOff, Mail, UserRound } from "lucide-react";
+import { ArrowLeft, Eye, EyeOff, Github, Mail, UserRound } from "lucide-react";
 import { useAuth } from "../state/AuthContext.jsx";
 
-export default function AuthModal({ initialMode = "login", onClose }) {
+export default function AuthModal({ initialMode = "login", initialError = "", onClose }) {
   const { login, register } = useAuth();
   const [mode, setMode] = useState(initialMode);
   const [firstName, setFirstName] = useState("");
@@ -10,7 +10,7 @@ export default function AuthModal({ initialMode = "login", onClose }) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [showPw, setShowPw] = useState(false);
-  const [error, setError] = useState("");
+  const [error, setError] = useState(() => initialError || new URLSearchParams(window.location.search).get("auth_error") || "");
   const [busy, setBusy] = useState(false);
 
   const isRegister = mode === "register";
@@ -22,14 +22,27 @@ export default function AuthModal({ initialMode = "login", onClose }) {
 
   async function onSubmit(e) {
     e.preventDefault();
+    const normalizedEmail = email.trim().toLowerCase();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)) {
+      setError("Enter a valid email address.");
+      return;
+    }
+    if (!password) {
+      setError("Enter your password.");
+      return;
+    }
+    if (isRegister && password.length < 8) {
+      setError("Your password must be at least 8 characters long.");
+      return;
+    }
     setBusy(true);
     setError("");
     try {
       if (isRegister) {
         const name = [firstName, lastName].filter(Boolean).join(" ") || firstName;
-        await register(email, password, name);
+        await register(normalizedEmail, password, name);
       } else {
-        await login(email, password);
+        await login(normalizedEmail, password);
       }
       onClose();
     } catch (err) {
@@ -79,9 +92,21 @@ export default function AuthModal({ initialMode = "login", onClose }) {
                 </button>
               </p>
 
-              {error && <div className="auth-error">{error}</div>}
+              {error && <div className="auth-error" role="alert" aria-live="polite">{error}</div>}
 
-              <form className="auth-form" onSubmit={onSubmit}>
+              <div className="auth-socials" aria-label="Social sign in options">
+                <a className="auth-social-btn" href="/api/auth/google">
+                  <span className="google-monogram" aria-hidden="true">G</span>
+                  <span>Continue with Google</span>
+                </a>
+                <a className="auth-social-btn" href="/api/auth/github">
+                  <Github />
+                  <span>Continue with GitHub</span>
+                </a>
+              </div>
+              <div className="auth-or" aria-hidden="true"><span>or continue with email</span></div>
+
+              <form className="auth-form" noValidate onSubmit={onSubmit}>
                 {isRegister && (
                   <div className="field-row">
                     <div className="field">
@@ -104,7 +129,7 @@ export default function AuthModal({ initialMode = "login", onClose }) {
                 <div className="field">
                   <label htmlFor="auth-email">Email</label>
                   <div className="field-input">
-                    <input id="auth-email" type="email" required autoFocus={!isRegister} value={email} onChange={(e) => setEmail(e.target.value)} placeholder="you@example.com" />
+                    <input id="auth-email" type="email" required autoComplete={isRegister ? "email" : "username"} autoFocus={!isRegister} value={email} onChange={(e) => setEmail(e.target.value)} placeholder="you@example.com" />
                     <Mail className="field-icon" />
                   </div>
                 </div>
@@ -116,7 +141,7 @@ export default function AuthModal({ initialMode = "login", onClose }) {
                       id="auth-password"
                       type={showPw ? "text" : "password"}
                       required
-                      minLength={6}
+                      autoComplete={isRegister ? "new-password" : "current-password"}
                       value={password}
                       onChange={(e) => setPassword(e.target.value)}
                       placeholder={isRegister ? "At least 6 characters" : "Password"}

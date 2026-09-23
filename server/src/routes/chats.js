@@ -3,6 +3,7 @@ import { nanoid } from "nanoid";
 import { identity } from "../middleware/auth.js";
 import { db } from "../db.js";
 import { processTask, resolveOffer, msg } from "../engine.js";
+import { decryptSecret } from "../secrets.js";
 
 const router = Router();
 const MAX_CHATS = 30;
@@ -80,13 +81,23 @@ router.post("/:id/messages", async (req, res) => {
   if (chat.title === "New chat") chat.title = text.slice(0, 42) + (text.length > 42 ? "…" : "");
 
   let effective = text;
+  let directOfferAction = null;
   if (chat.awaiting) {
     effective = chat.awaiting.originalText + "\n\nAdditional detail: " + text;
     chat.awaiting = null;
+  } else {
+    const pendingOffer = [...chat.messages].reverse().find((item) => item.kind === "offer" && !item.resolved);
+    if (pendingOffer && /^(yes|yeah|yep|sure|okay|ok|use it|create it|create the tool|use the tool)\b/i.test(text)) {
+      directOfferAction = pendingOffer.offerType === "use" ? "use" : "create";
+    } else if (pendingOffer && /^(no|nope|not now|answer normally|from scratch)\b/i.test(text)) {
+      directOfferAction = "general";
+    }
   }
 
   try {
-    const newMessages = await processTask(chat, effective, tier, credsFor(req));
+    const newMessages = directOfferAction
+      ? await resolveOffer(chat, [...chat.messages].reverse().find((item) => item.kind === "offer" && !item.resolved), directOfferAction, tier, credsFor(req))
+      : await processTask(chat, effective, tier, credsFor(req));
     chat.messages.push(...newMessages);
     trimChat(chat);
     chat.updatedAt = Date.now();
@@ -95,6 +106,36 @@ router.post("/:id/messages", async (req, res) => {
   } catch (e) {
     chat.updatedAt = Date.now();
     await db.write(); // keep the user's message even if the model call failed
+    res.status(errStatus(e)).json({ error: errMessage(e), chat });
+  }
+});
+
+// Regenerate the reply to the most recent user message: drop everything after
+// it and run the pipeline again, like the retry arrow in other chat apps.
+router.post("/:id/retry", async (req, res) => {
+  await db.read();
+  await cleanupGuestChats();
+  const chat = findChat(req);
+  if (!chat) return res.status(404).json({ error: "Chat not found." });
+
+  const tier = TIERS.includes(req.body?.tier) ? req.body.tier : "default";
+  const roles = chat.messages.map((m) => m.role);
+  const lastUserIndex = roles.lastIndexOf("user");
+  if (lastUserIndex === -1) return res.status(400).json({ error: "There is no message to retry yet." });
+
+  const userMsg = chat.messages[lastUserIndex];
+  chat.messages = chat.messages.slice(0, lastUserIndex + 1);
+
+  try {
+    const newMessages = await processTask(chat, userMsg.text, tier, credsFor(req));
+    chat.messages.push(...newMessages);
+    trimChat(chat);
+    chat.updatedAt = Date.now();
+    await db.write();
+    res.json({ chat, added: newMessages });
+  } catch (e) {
+    chat.updatedAt = Date.now();
+    await db.write(); // keep the trimmed history even if the model call failed
     res.status(errStatus(e)).json({ error: errMessage(e), chat });
   }
 });
@@ -131,15 +172,16 @@ function findChat(req) {
   return db.data.chats.find((c) => c.id === req.params.id && c.userId === req.ownerId);
 }
 
-// The caller's own saved provider settings, or null to fall back to the
-// server's key from .env. Works the same for members and guests: the guest
-// cookie is only an identity, saved connections still belong to accounts.
+// The caller's own saved provider settings, or null to use the local Ollama
+// default. Saved integrations belong to accounts; guest chats use Ollama.
 function credsFor(req) {
   if (req.isGuest) return null;
-  const saved = db.data.users.find((u) => u.id === req.user.id)?.integration;
+  const user = db.data.users.find((u) => u.id === req.user.id);
+  const saved = user?.integrations?.find((item) => item.id === user.activeIntegrationId) || user?.integrations?.[0] || user?.integration;
   if (!saved) return null;
-  if (saved.provider === "ollama") return { provider: "ollama", model: saved.model };
-  return saved.apiKey ? { provider: saved.provider, apiKey: saved.apiKey } : null;
+  if (saved.provider === "ollama") return { provider: "ollama", protocol: "ollama", model: saved.model, baseUrl: saved.baseUrl };
+  const apiKey = decryptSecret(saved.apiKeyEncrypted) || saved.apiKey;
+  return apiKey ? { provider: saved.provider, protocol: saved.protocol, baseUrl: saved.baseUrl, apiKey, model: saved.model } : null;
 }
 function trimChat(chat) {
   if (chat.messages.length > MAX_MESSAGES) chat.messages = chat.messages.slice(chat.messages.length - MAX_MESSAGES);
@@ -161,9 +203,9 @@ function errStatus(e) {
 function errMessage(e) {
   switch (e.code) {
     case "no_api_key":
-      return "No LLM API key is available. Add your own key on the Integrations page, set API_KEY in server/.env, or connect Ollama Local.";
+      return "No API key is available for the selected provider. Add the provider in the Integrations page, or use Ollama Local.";
     case "unauthorized":
-      return "The API key was rejected by the provider. Check the key saved on the Integrations page, or API_KEY in server/.env.";
+      return "The provider rejected the saved API key. Check the connection in the Integrations page.";
     case "rate_limited":
       return "The LLM provider is rate limiting this API key. Try again shortly.";
     case "invalid_json":

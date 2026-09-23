@@ -8,7 +8,7 @@ export default function OfferCard({ m, onResolve }) {
         I already have a tool for this: <b>{m.toolName}</b>. Use it, or answer from scratch?
       </>
     ) : (
-      <>That's the {m.clusterCount}{m.clusterCount === 3 ? "rd" : "th"} similar request I've seen. Want me to turn it into a reusable tool?</>
+      <>I've identified a recurring task in {m.clusterCount} requests. Do you want me to compile a reusable neural program for it?</>
     );
   const meta =
     m.offerType === "use"
@@ -33,7 +33,7 @@ export default function OfferCard({ m, onResolve }) {
             ) : (
               <>
                 <button className="go" onClick={() => onResolve(m.id, "create")}>
-                  <Puzzle /> Create tool
+                  <Puzzle /> Compile neural program
                 </button>
                 <button onClick={() => onResolve(m.id, "general")}>Just answer this time</button>
                 <button onClick={() => onResolve(m.id, "clarify")}>Not sure, ask me</button>
@@ -43,9 +43,9 @@ export default function OfferCard({ m, onResolve }) {
         ) : (
           <div className="offer-resolved">
             {m.resolved === "use"
-              ? "→ used the compiled tool"
+              ? "→ used the reusable neural program"
               : m.resolved === "create"
-              ? "→ created and used a new tool"
+              ? "→ compiled and used the reusable neural program"
               : m.resolved === "clarify"
               ? "→ asked a follow-up question"
               : "→ answered from scratch"}
