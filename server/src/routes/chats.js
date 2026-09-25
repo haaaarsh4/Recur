@@ -198,6 +198,7 @@ function errStatus(e) {
   if (e.code === "unauthorized") return 502;
   if (e.code === "rate_limited") return 429;
   if (e.code === "not_found") return 404;
+  if (e.code === "ollama_offline") return 503;
   return 500;
 }
 function errMessage(e) {

@@ -3,7 +3,20 @@ import "dotenv/config";
 // Ollama is the only implicit backend. Hosted providers are selected through
 // an authenticated integration and passed explicitly in `creds`.
 const ENV_PROVIDER = "ollama";
-const OLLAMA_BASE_URL = (process.env.OLLAMA_BASE_URL || "http://127.0.0.1:11434").replace(/\/$/, "");
+// A scheme-less tunnel URL would make fetch throw a raw "Failed to parse URL"
+// error before any request is sent, so normalize the base URL here. Local
+// addresses keep http, everything else gets https.
+const RAW_OLLAMA_BASE_URL = (process.env.OLLAMA_BASE_URL || "http://127.0.0.1:11434").replace(/\/$/, "");
+const LOOKS_LOCAL = /^(localhost|127\.0\.0\.1|\[::1\]|0\.0\.0\.0|192\.168\.|10\.|172\.(1[6-9]|2\d|3[01])\.)/i;
+const OLLAMA_BASE_URL = /^https?:\/\//i.test(RAW_OLLAMA_BASE_URL)
+  ? RAW_OLLAMA_BASE_URL
+  : `${LOOKS_LOCAL.test(RAW_OLLAMA_BASE_URL) ? "http" : "https"}://${RAW_OLLAMA_BASE_URL}`;
+// The default backend is Ollama on Harsh's laptop, reached from production
+// through a tunnel (OLLAMA_BASE_URL). When the laptop or the tunnel agent is
+// offline the tunnel edge is still up and answers on its behalf, so every
+// unreachable-backend path should surface this exact message.
+const OLLAMA_OFFLINE_MESSAGE =
+  "Recur's model backend is offline right now. It runs locally on Harsh's machine, so replies are unavailable until it is back. Please try again later or contact Harsh.";
 
 const DEFAULT_MODELS = {
   ollama: {
@@ -119,6 +132,13 @@ async function callOllama(prompt, model, maxTokens = 320, timeoutMs = 45000) {
     }),
   });
   if (!res.ok) {
+    // The tunnel edge answers 502/503/504 when the agent behind it (the
+    // laptop) is offline. Distinguish that from Ollama's own errors.
+    if (res.status === 502 || res.status === 503 || res.status === 504) {
+      const err = new Error(OLLAMA_OFFLINE_MESSAGE);
+      err.code = "ollama_offline";
+      throw err;
+    }
     if (res.status === 404) {
       const err = new Error(`Ollama could not find model ${model}. Run ollama pull ${model}.`);
       err.code = "model_not_found";
@@ -146,10 +166,26 @@ async function callLLM(prompt, tier = "default", creds = null) {
   const timeoutMs = tier === "quick" ? 20000 : tier === "complex" ? 90000 : 45000;
   const t0 = Date.now();
   let text;
-  if (protocol === "ollama") text = await callOllama(prompt, model, maxTokens, timeoutMs);
-  else if (protocol === "anthropic") text = await callAnthropic(apiKey, prompt, model, baseUrl || undefined);
-  else if (protocol === "gemini") text = await callGemini(apiKey, prompt, model, baseUrl || undefined);
-  else text = await callOpenAI(apiKey, prompt, model, baseUrl || undefined);
+  try {
+    if (protocol === "ollama") text = await callOllama(prompt, model, maxTokens, timeoutMs);
+    else if (protocol === "anthropic") text = await callAnthropic(apiKey, prompt, model, baseUrl || undefined);
+    else if (protocol === "gemini") text = await callGemini(apiKey, prompt, model, baseUrl || undefined);
+    else text = await callOpenAI(apiKey, prompt, model, baseUrl || undefined);
+  } catch (e) {
+    // "fetch failed" is Node's raw network error. Replace it with something a
+    // user can act on, most commonly Ollama being unreachable in a deployment
+    // where no local daemon exists.
+    if (e && (e.code === "ENOTFOUND" || e.code === "ECONNREFUSED" || e.code === "EAI_AGAIN" || e.code === "ERR_INVALID_URL" || /fetch failed/i.test(String(e.message)))) {
+      const err = new Error(
+        protocol === "ollama"
+          ? OLLAMA_OFFLINE_MESSAGE
+          : `Could not reach the ${provider} API. Check the base URL and network access.`
+      );
+      err.code = protocol === "ollama" ? "ollama_offline" : "model_unreachable";
+      throw err;
+    }
+    throw e;
+  }
   return { text: text.trim(), latencyMs: Date.now() - t0, model };
 }
 
