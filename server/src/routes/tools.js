@@ -20,7 +20,7 @@ router.get("/", async (req, res) => {
       changed = true;
     }
     const previous = byFamily.get(key);
-    if (!previous || (tool.executions || 0) > (previous.executions || 0) || ((tool.dataset?.target || 0) > (previous.dataset?.target || 0))) byFamily.set(key, tool);
+    if (!previous || (tool.executions || 0) > (previous.executions || 0) || ((tool.metrics?.demonstrations || 0) > (previous.metrics?.demonstrations || 0))) byFamily.set(key, tool);
   }
   if (byFamily.size !== db.data.tools.length) {
     db.data.tools = [...byFamily.values()];

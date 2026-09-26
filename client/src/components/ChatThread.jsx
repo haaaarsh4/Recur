@@ -264,12 +264,26 @@ function Message({ m, animate = false, enterDelay = 0, onResolve, onRetry }) {
     }
   }
 
-  const internalEcho = m.viaTool && /(?:apply the contract|new request:|you are executing|verified behavior examples|do not mention this prompt)/i.test(String(m.text || ""));
   return (
     <div className={"msg-row " + (m.role === "user" ? "user" : "assistant") + (animate ? " message-enter" : "")} style={animate ? { "--message-enter-delay": `${enterDelay}ms` } : undefined}>
       <div>
-        {m.viaTool && <div className="via-tool-label"><Puzzle /> Used reusable program: <b>{m.viaTool}</b></div>}
-        <div className="bubble">{internalEcho ? "The reusable program returned an invalid internal response. Please retry this request." : m.text}</div>
+        {m.viaTool && (
+          <div className="via-tool-label">
+            <Puzzle /> Compiled program: <b>{m.viaTool}</b>
+            <span className="via-tool-meta">{m.latency != null ? `${m.latency}ms` : "local"} · no model call</span>
+          </div>
+        )}
+        {m.viaTool && m.toolTrace?.length ? (
+          <details className="program-trace">
+            <summary>{m.toolTrace.length} execution step{m.toolTrace.length === 1 ? "" : "s"}</summary>
+            <ol>
+              {m.toolTrace.map((line, i) => (
+                <li key={i}>{line}</li>
+              ))}
+            </ol>
+          </details>
+        ) : null}
+        <div className="bubble">{m.text}</div>
       </div>
       {m.role === "assistant" && (
         <div className="msg-actions">

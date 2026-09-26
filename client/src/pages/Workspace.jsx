@@ -71,7 +71,7 @@ export default function Workspace() {
   // Chat switching uses one single opacity fade: the current view fades out,
   // content swaps while fully transparent, then the new view fades in. Because
   // there is exactly one animation on one element, nothing can restart or drop
-  // in mid-flight — the old flash-and-reanimate glitch came from stacking a
+  // in mid-flight: the old flash-and-reanimate glitch came from stacking a
   // second animation on top of a running one.
   async function swapChat(load, source) {
     const fadeId = ++fadeRef.current;

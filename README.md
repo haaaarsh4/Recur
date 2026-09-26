@@ -105,8 +105,12 @@ The UI and the program details card state this directly. The architecture was de
 ├── server/                    Express backend
 │   ├── src/
 │   │   ├── index.js           App entry, static client hosting, health check
-│   │   ├── db.js              lowdb storage and startup repair
+│   │   ├── db.js              lowdb storage, writable path choice, startup repair
+│   │   ├── app.js             Express app, static client hosting, health check
+│   │   ├── index.js           Standalone entry, starts the listener
 │   │   ├── engine.js          Task pipeline, clustering, compilation, reuse
+│   │   ├── program.js         Program compiler and the VM that runs its output
+│   │   ├── neural.js          Locally trained acceptance head
 │   │   ├── embeddings.js      Task profiling and similarity
 │   │   ├── llm.js             Provider calls, tiers, timeouts
 │   │   ├── providers.js       Provider catalog
@@ -114,6 +118,8 @@ The UI and the program details card state this directly. The architecture was de
 │   │   ├── secrets.js         Key encryption
 │   │   └── routes/            auth, chats, tools, stats, integrations
 │   └── data/db.json           Created automatically on first run
+├── api/index.js               Serverless function entry for Vercel
+├── vercel.json                Vercel build, output, and rewrite settings
 └── package.json               Root scripts for install, build, and start
 ```
 
@@ -186,16 +192,45 @@ All endpoints are under `/api`.
 
 The server doubles as the web host. Once the client is built, Express serves `client/dist` and falls back to the app for any non API route, so the whole project runs as a single service.
 
-The free tier of Render is the simplest path.
+### Vercel
+
+`api/index.js` exports the Express app as a serverless function and `vercel.json` holds the build settings, so the repository is ready to import as is. On the New Project screen:
+
+| Field | Value |
+| --- | --- |
+| Root Directory | `./` |
+| Application Preset | Other |
+| Build Command | `npm run setup` (override on) |
+| Output Directory | `client/dist` (override on, same value as `vercel.json`) |
+| Install Command | leave the default |
+
+Then add these environment variables for both Production and Preview:
+
+| Variable | Value |
+| --- | --- |
+| `JWT_SECRET` | a long random string, for example `node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"` |
+| `INTEGRATION_ENCRYPTION_KEY` | a second long random string; falls back to `JWT_SECRET` if omitted |
+| `CLIENT_ORIGIN` | the deployed origin, for example `https://recur.vercel.app`, with no trailing slash |
+
+`PORT` is set by the platform and needs no value. `CLIENT_ORIGIN` is the one that quietly breaks things when it is wrong: it is both the allowed CORS origin and the base for OAuth callbacks, so a stale value means every request from the deployed app is rejected.
+
+Two things to know about a Vercel deployment:
+
+- **Storage is per instance and temporary.** A Vercel function mounts the project read-only, so `db.js` puts `db.json` in the system temp directory instead. Every warm instance has its own file, and a redeploy or a scale event wipes it. Chats created on one instance can be missing on another. This is fine for a demo of the compiled programs and nothing else; a durable host needs a different store.
+- **The model backend stays at home.** Ollama runs on your machine, so general answers need `OLLAMA_BASE_URL` pointed at a tunnel, or a provider key added on the Integrations page after the first deploy. Compiled programs do not use a model, so they keep answering either way.
+
+### Render
+
+The free tier of Render is the simplest long running host.
 
 1. Push this repository to GitHub.
 2. In Render, create a Web Service from the repo.
-3. Build command: `npm --prefix client install && npm --prefix client run build && npm --prefix server install`
+3. Build command: `npm run setup`
 4. Start command: `npm --prefix server run start`
 5. Health check path: `/api/health`
 6. Environment variables: `NODE_ENV=production`, a long random `JWT_SECRET`, an `INTEGRATION_ENCRYPTION_KEY`, and `CLIENT_ORIGIN` set to your Render URL.
 
-One thing to plan for: Ollama runs on your machine, not in the cloud. On hosting, either connect a hosted provider on the Integrations page after the first deploy, or expose your local Ollama through a tunnel and point `OLLAMA_BASE_URL` at it. The free tier also uses an ephemeral disk, so `db.json` resets when the service redeploys or restarts.
+Render also uses an ephemeral disk, so `db.json` resets when the service redeploys or restarts.
 
 ## A note on the research direction
 

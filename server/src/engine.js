@@ -1,21 +1,82 @@
+// Recur's task pipeline.
+//
+// Two paths exist and they are deliberately different:
+//
+//   general  : the model answers. Used for one-off requests and for the first
+//              few repeats while the learner is still collecting evidence.
+//   compiled : a program synthesized from verified demonstrations is executed
+//              locally. No model call happens on this path, not while compiling
+//              and not while reusing. This is the whole point of the project.
+//
+// Compiling writes an executable artifact (see program.js) plus a small
+// acceptance head trained locally (see neural.js). Reusing runs that artifact.
+
 import { nanoid } from "nanoid";
 import { db, registryDescription } from "./db.js";
 import { embed, cosine, centroid, profileTask, hybridSimilarity } from "./embeddings.js";
-import { callLLM, callLLMJson } from "./llm.js";
+import { callLLM } from "./llm.js";
+import {
+  COMPILER_VERSION,
+  RUNTIME,
+  compileProgram,
+  executeProgram,
+  gradeProgram,
+  leaveOneOut,
+  stressTest,
+  sampleProgramInputs,
+  nameProgram,
+  sanitizeName,
+  specificationFor,
+  programListing,
+  programSummary,
+  uncoveredBranches,
+  derivedBranches,
+} from "./program.js";
+import { trainAcceptanceGate, gateScore } from "./neural.js";
 
 const MATCH_THRESHOLD = 0.78;
+// Above this similarity, plus a confident acceptance head, the compiled program
+// runs immediately: a repeated task should be answered by the program, not by
+// asking the user again. Between the two thresholds the user is offered the
+// program and decides, because the match is plausible but not certain.
+const AUTO_RUN_THRESHOLD = 0.84;
 const CLUSTER_THRESHOLD = 0.78;
 const CLUSTER_SIZE = 3;
-const DATASET_TARGET = Math.max(500, Math.min(10000, Number(process.env.PROGRAM_DATASET_SIZE || 2000)));
+// The head can veto automatic reuse; it can never veto an explicit "use it".
+const GATE_MIN = 0.35;
+const GATE_SAMPLE_POSITIVES = 12;
+
+const DISTRACTORS = [
+  "what is the capital of france",
+  "explain how photosynthesis works",
+  "write a short poem about the ocean",
+  "summarize this article in three bullets",
+  "debug this python function for me",
+  "what is the weather like tomorrow",
+  "translate this sentence into spanish",
+  "give me ideas for a birthday present",
+  "what time is it in tokyo right now",
+  "review my resume and suggest improvements",
+  "what is the difference between http and https",
+  "plan a three day trip to rome",
+];
 
 function msg(fields) {
   return { id: nanoid(), ts: Date.now(), ...fields };
 }
 
+function normalizeKey(text) {
+  return String(text || "").toLowerCase().replace(/\s+/g, " ").trim();
+}
+
+// ---------------------------------------------------------------------------
+// matching
+// ---------------------------------------------------------------------------
+
 function usableProfile(item) {
   // Recompute the profile from the original request when it is available. This
-  // lets improved normalization repair old pending observations and legacy
-  // tools instead of trusting a stale profile saved by an earlier matcher.
+  // lets improved normalization repair old pending observations instead of
+  // trusting a stale profile saved by an earlier matcher.
   const source = item?.text || item?.sourceTasks?.[0];
   if (source) {
     const recovered = profileTask(source);
@@ -32,9 +93,12 @@ function taskSimilarity(profile, vector, item) {
   return hybridSimilarity(profile, other, cosine(vector, item.vector || item.embedding));
 }
 
+// A tool only counts once it holds an executable program. Legacy contracts from
+// the earlier compiler are listed in the registry but can never be reused.
 function isReusableTool(tool) {
   const name = String(tool?.name || "").toLowerCase();
-  return Boolean(name && !/(?:kebab-case-name|semantic-kebab-name|placeholder)/.test(name));
+  if (!name || /(?:kebab-case-name|semantic-kebab-name|placeholder)/.test(name)) return false;
+  return Boolean(tool?.program && tool.program.version && tool.program.read && tool.program.emit);
 }
 
 function bestMatch(profile, vec) {
@@ -53,16 +117,14 @@ function bestMatch(profile, vec) {
 
 function clusterFor(profile, vec) {
   // Every successful observation counts, including repeated identical requests.
-  // Frequency is evidence that a task is worth compiling; deduplicating here
-  // was the reason the same question could be asked forever without reaching
-  // the compilation threshold.
+  // Frequency is evidence that a task is worth compiling.
   return db.data.pending.filter((pending) => taskSimilarity(profile, vec, pending) >= CLUSTER_THRESHOLD);
 }
 
 function uniqueExamples(items) {
   const seen = new Set();
   return items.filter((item) => {
-    const key = String(item.text || "").toLowerCase().replace(/\s+/g, " ").trim();
+    const key = normalizeKey(item.text);
     if (seen.has(key)) return false;
     seen.add(key);
     return true;
@@ -71,11 +133,27 @@ function uniqueExamples(items) {
 
 function rememberPending(text, profile, vector, output = null) {
   if (!profile.meaningful) return;
-  db.data.pending.push({ id: nanoid(), text, profile, vector, output: output ? String(output).slice(0, 1200) : null, createdAt: Date.now() });
+  db.data.pending.push({
+    id: nanoid(),
+    text,
+    profile,
+    vector,
+    output: output ? String(output).slice(0, 1200) : null,
+    createdAt: Date.now(),
+  });
 }
+
+// ---------------------------------------------------------------------------
+// prompts: only for the general path and for asking a clarifying question.
+// Nothing here is ever used to produce a compiled program's answer.
+// ---------------------------------------------------------------------------
 
 function buildGeneralPrompt(text) {
   return `Answer the request directly and concisely. Verify simple facts, arithmetic, spelling, and string properties yourself before answering. Never agree with a false premise. Use at most 3 short sentences unless the user explicitly asks for detail. If examples are requested, give only the requested examples with a one-line explanation. No preamble and no meta commentary.\n\nRequest: ${text}`;
+}
+
+function buildClarifyPrompt(taskText, context) {
+  return `A user sent this request: "${taskText}"\n\nContext: ${context}\n\nAsk ONE short, natural clarifying question that would help decide how to handle it. Reply with only the question, nothing else.`;
 }
 
 function identityReply(tier) {
@@ -84,65 +162,145 @@ function identityReply(tier) {
   return "I am Recur, the balanced Recur mode for normal questions. You can think of this as the basic or standard Recur model. I answer requests, notice repeated patterns, and help turn repeated work into reusable tools.";
 }
 
-function buildToolPrompt(tool, text) {
-  const examples = tool.examples?.length ? "\nVerified examples:\n" + tool.examples.map((e) => `input=${e.input}\noutput=${e.output}`).join("\n") : "";
-  return `Task: ${tool.specification}${examples}\n\nInput: ${text}\n\nReturn only the correct answer for the input. Do not repeat the task, input, examples, or instructions.`;
+// ---------------------------------------------------------------------------
+// evidence: verified demonstration pairs, conflicts discarded first
+// ---------------------------------------------------------------------------
+
+// The rule the user asked for: an input that ever produced two different outputs
+// is not evidence of anything, so it is removed before compiling.
+function verifiedPairs(items) {
+  const groups = new Map();
+  for (const item of items) {
+    if (!item?.output) continue;
+    const key = normalizeKey(item.text);
+    if (!key) continue;
+    if (!groups.has(key)) groups.set(key, { input: item.text, outputs: new Map() });
+    const output = String(item.output).trim();
+    groups.get(key).outputs.set(output, (groups.get(key).outputs.get(output) || 0) + 1);
+  }
+  const pairs = [];
+  const discarded = [];
+  for (const group of groups.values()) {
+    const outputs = [...group.outputs.keys()];
+    if (outputs.length > 1) discarded.push({ input: group.input, outputs: outputs.slice(0, 3) });
+    else pairs.push({ input: group.input, output: outputs[0] });
+  }
+  return { pairs, discarded };
 }
 
-function looksLikePromptEcho(text) {
-  return /(?:apply the contract|new request:|you are executing|verified behavior examples|do not mention this prompt)/i.test(String(text || ""));
+function gateNegatives(members, profile) {
+  const memberKeys = new Set(members.map((member) => normalizeKey(member.text)));
+  const negatives = [...DISTRACTORS];
+  for (const pending of db.data.pending) {
+    if (memberKeys.has(normalizeKey(pending.text))) continue;
+    negatives.push(pending.text);
+  }
+  for (const tool of db.data.tools) {
+    for (const test of tool.tests || []) negatives.push(test.input);
+  }
+  return [...new Set(negatives.filter(Boolean))].slice(0, 40);
 }
 
-async function runTool(tool, text, creds = null) {
-  let result = await callLLM(buildToolPrompt(tool, text), "default", creds);
-  // Small local models sometimes copy the execution prompt. Never expose that
-  // internal prompt to the user; retry with the normal answer contract.
-  if (looksLikePromptEcho(result.text)) result = await callLLM(buildGeneralPrompt(text), "default", creds);
-  return result;
+// ---------------------------------------------------------------------------
+// compilation: synthesize a program, train the acceptance head, record evidence
+// ---------------------------------------------------------------------------
+
+function seedOf(text) {
+  let hash = 2166136261;
+  for (const ch of String(text)) {
+    hash ^= ch.charCodeAt(0);
+    hash = Math.imul(hash, 16777619);
+  }
+  return Math.abs(hash) >>> 0;
 }
 
-function programInfo(tool) {
-  const dataset = tool.dataset || {};
-  const split = dataset.split || {};
-  const sourceCount = tool.sourceTasks?.length || 0;
-  const pending = dataset.status === "background synthesis queued";
-  return [
-    `Program: ${tool.name}`,
-    `Task: ${tool.specification}`,
-    `Runtime: ${tool.runtime || "contract-guided model program"}`,
-    pending
-      ? `Dataset synthesis: queued from ${dataset.seed || 0} verified user observations toward an initial ${dataset.generationTarget || "unknown"}-example dataset and full ${dataset.target || "unknown"}-example target.`
-      : `Dataset: ${dataset.total || 0} examples (${dataset.seed || 0} user observations + ${dataset.generated || 0} teacher-generated candidates).`,
-    pending ? "Splits: pending until background dataset synthesis completes." : `Splits: train ${split.train || 0} · validation ${split.validation || 0} · test ${split.test || 0}.`,
-    `Dataset status: ${dataset.status || "not generated"} (initial target ${dataset.generationTarget || "unknown"}; full target ${dataset.target || "unknown"}).`,
-    `Source requests: ${sourceCount}.`,
-    `Training: ${tool.trainingStatus || "not run; no separate neural weights are trained by this Node prototype"}.`,
-    `Accuracy: ${tool.accuracy == null ? "not measured; a test set exists only after an actual trained runtime evaluates it" : `${tool.accuracy}%`}.`,
-    "Status: saved and available for future matching requests.",
-  ].join("\n");
+async function compileToolFrom(members, currentText, currentProfile, currentVec) {
+  // One program per task family. If a compiled program already covers this
+  // family, it answers the request instead of a duplicate being built.
+  const existing = db.data.tools.find((candidate) => isReusableTool(candidate) && taskSimilarity(currentProfile, currentVec, candidate) >= MATCH_THRESHOLD);
+  if (existing) {
+    const memberIds = new Set(members.map((member) => member.id));
+    db.data.pending = db.data.pending.filter((pending) => !memberIds.has(pending.id));
+    return { tool: existing, existing: true, reason: "an existing program already covers this task family", discarded: [] };
+  }
+  const { pairs, discarded } = verifiedPairs(members);
+  if (!pairs.length) {
+    const reason = discarded.length
+      ? "every observation in this cluster had conflicting answers, so there was nothing verified to compile from"
+      : "this cluster has no recorded answers yet, so there is nothing verified to compile from";
+    return { tool: null, reason, discarded };
+  }
+  const startedAt = Date.now();
+  const compiled = compileProgram(pairs, currentProfile);
+  if (!compiled.program) {
+    return { tool: null, reason: compiled.reason, discarded, explored: compiled.explored || 0 };
+  }
+  const program = compiled.program;
+  const grade = gradeProgram(program, pairs);
+  const generalization = leaveOneOut(pairs, currentProfile);
+  const stress = stressTest(program, seedOf(currentText));
+  const neural = trainAcceptanceGate({
+    positives: [...pairs.map((pair) => pair.input), ...sampleProgramInputs(program, GATE_SAMPLE_POSITIVES, seedOf(currentText))],
+    negatives: gateNegatives(members, currentProfile),
+    seed: seedOf(currentText + program.cost),
+  });
+
+  const vectors = [...members.map((member) => member.vector), currentVec].filter((vector) => Array.isArray(vector));
+  const tool = {
+    id: nanoid(),
+    name: sanitizeName(nameProgram(program, currentProfile)),
+    specification: specificationFor(program),
+    runtime: RUNTIME,
+    compiler: COMPILER_VERSION,
+    status: "active",
+    program,
+    listing: programListing(program),
+    summary: programSummary(program),
+    tests: pairs.slice(0, 12),
+    discarded: discarded.slice(0, 8),
+    metrics: {
+      demonstrations: pairs.length,
+      reproduced: grade.reproduced,
+      consistency: grade.consistency,
+      coverage: program.coverage || { demonstrations: pairs.length, exact: grade.reproduced, variants: 0, explained: grade.reproduced },
+      generalization,
+      stress,
+      compileMs: Date.now() - startedAt,
+      candidatesExplored: compiled.explored || 0,
+      modelCalls: 0,
+    },
+    neural,
+    profile: currentProfile,
+    embedding: centroid(vectors),
+    sourceTasks: uniqueExamples(members).map((member) => member.text).slice(0, 6),
+    createdAt: Date.now(),
+    executions: 0,
+    totalLatencyMs: 0,
+    lastRun: null,
+  };
+  tool.description = registryDescription(tool, currentProfile);
+  db.data.tools.unshift(tool);
+  const memberIds = new Set(members.map((member) => member.id));
+  db.data.pending = db.data.pending.filter((pending) => !memberIds.has(pending.id));
+  return { tool, discarded, grade, generalization, stress, explored: compiled.explored || 0 };
 }
 
-function buildCompilePrompt(samples) {
-  return `You are compiling a reusable neural program from verified demonstrations. Infer only the common computation shared by these demonstrations; do not solve a different or broader task.\n\nVerified demonstrations:\n${samples.map((s, i) => `${i + 1}. INPUT: ${s.input}\n   VERIFIED OUTPUT: ${s.output || "(not available; infer the task, but do not invent an output example)"}`).join("\n")}\n\nReturn ONLY JSON with this shape:\n{"name":"semantic-kebab-name","specification":"one precise sentence describing the input, computation, and output"}\n\nRules: name must be a meaningful 2-to-4-word kebab-case name, never a schema placeholder; specification must be narrow and executable; never claim the program performs a task that is not evidenced. Do not return examples.`;
+// ---------------------------------------------------------------------------
+// execution: deterministic, local, no model call
+// ---------------------------------------------------------------------------
+
+function accepts(tool, text) {
+  return executeProgram(tool.program, text).ok;
 }
 
-function buildDatasetPrompt(specification, seedSamples, count) {
-  return `Create ${count} diverse candidate demonstrations for this task specification:\n${specification}\n\nExisting verified observations:\n${seedSamples.map((sample) => `input=${sample.input}\noutput=${sample.output}`).join("\n")}\n\nReturn ONLY JSON in this shape: {"examples":[{"input":"...","output":"..."}]}\nGenerate realistic, varied, edge-case inputs and the exact expected outputs. Do not include explanations, task descriptions, or instructions. These are teacher-labelled candidates and will be validated before any training.`;
-}
-
-function buildClarifyPrompt(taskText, context) {
-  return `A user sent this request: "${taskText}"\n\nContext: ${context}\n\nAsk ONE short, natural clarifying question that would help decide how to handle it. Reply with only the question, nothing else.`;
-}
-
-function sanitizeName(name) {
-  if (!name || typeof name !== "string") return null;
-  const normalized = name.toLowerCase().trim().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40);
-  if (!normalized || /^(?:kebab-case-name-2-to-4-words|semantic-kebab-name|placeholder|example-name)$/.test(normalized)) return null;
-  return normalized;
-}
-
-async function recordLog(entry) {
-  db.data.log.push({ id: nanoid(), ts: Date.now(), ...entry });
+async function runProgramTool(tool, text) {
+  if (!isReusableTool(tool)) return { ok: false, reason: "this tool holds no executable program" };
+  const run = executeProgram(tool.program, text);
+  if (!run.ok) return { ok: false, reason: run.reason, trace: run.trace };
+  bumpTool(tool, run.ms);
+  tool.lastRun = { at: Date.now(), ms: run.ms, input: String(text).slice(0, 200), output: run.text.slice(0, 300) };
+  await recordLog({ type: "program", toolId: tool.id, toolName: tool.name, latencyMs: run.ms });
+  return { ok: true, text: run.text, ms: run.ms, trace: run.trace, path: run.path };
 }
 
 function bumpTool(tool, latency) {
@@ -150,144 +308,102 @@ function bumpTool(tool, latency) {
   tool.totalLatencyMs = (tool.totalLatencyMs || 0) + latency;
 }
 
-function verifiedSamples(items) {
-  const groups = new Map();
-  for (const item of items) {
-    if (!item.output) continue;
-    const key = String(item.text).toLowerCase().replace(/\s+/g, " ").trim();
-    const outputs = groups.get(key) || new Set();
-    outputs.add(String(item.output).trim());
-    groups.set(key, outputs);
+async function recordLog(entry) {
+  db.data.log.push({ id: nanoid(), ts: Date.now(), ...entry });
+}
+
+function programInfo(tool, heading = "Program details") {
+  const metrics = tool.metrics || {};
+  const neural = tool.neural?.stats || null;
+  const stress = metrics.stress || {};
+  const lines = [
+    `Program: ${tool.name}`,
+    `Task: ${tool.specification}`,
+    `Runtime: ${tool.runtime} (typed dataflow interpreter, executed locally at reuse, no model call)`,
+    `Path: ${tool.summary?.path || programListing(tool.program).join(" → ")}`,
+    `Compiled from: ${metrics.demonstrations || 0} verified demonstration${(metrics.demonstrations || 0) === 1 ? "" : "s"}, ${(tool.discarded || []).length} conflicting input${(tool.discarded || []).length === 1 ? "" : "s"} discarded before compilation, 0 model calls`,
+    `Consistency: ${metrics.coverage?.exact ?? metrics.reproduced ?? 0} of ${metrics.demonstrations || 0} demonstrations reproduced exactly${metrics.coverage?.variants ? `, ${metrics.coverage.variants} recognised as the same answer in different words` : ""}`,
+    `Wording source: ${[...new Set((tool.tests || []).map((test) => test.output))].length} distinct phrasings were seen; the program emits the phrasing supported by the most demonstrations`,
+    `Generalization: leave-one-out ${metrics.generalization?.passed ?? 0}/${metrics.generalization?.folds ?? 0} folds; wording derived for ${derivedBranches(tool.program).length} unseen branch${derivedBranches(tool.program).length === 1 ? "" : "es"}`,
+    `Acceptance head: ${neural ? `${tool.neural.hidden} hidden units, ${tool.neural.weights} stored weights, holdout accuracy ${Math.round((neural.holdoutAccuracy ?? 0) * 100)}% on ${neural.holdoutSize} examples` : "not trained"}`,
+    `Search: ${metrics.candidatesExplored || 0} candidate programs explored in ${metrics.compileMs || 0}ms`,
+    `Stress test: ${stress.cases || 0} generated in-domain inputs, ${stress.executed || 0} executed, ${stress.declined || 0} declined, ${stress.crashes || 0} exceptions, fully deterministic`,
+  ];
+  const outliers = metrics.coverage?.outliers || [];
+  const disagreements = metrics.coverage?.disagreements || [];
+  if (outliers.length) {
+    lines.push(`Evidence check: ${outliers.length} recorded answer${outliers.length === 1 ? "" : "s"} disagreed with the computed answer and ${outliers.length === 1 ? "was" : "were"} excluded: ${outliers.map((pair) => `"${pair.output}"`).join(", ")}`);
   }
-  const conflicting = new Set([...groups].filter(([, outputs]) => outputs.size > 1).map(([key]) => key));
-  return items
-    .filter((item) => item.output && !conflicting.has(String(item.text).toLowerCase().replace(/\s+/g, " ").trim()))
-    .map((item) => ({ input: item.text, output: item.output }));
-}
-
-function safeSpecification(specification, profile) {
-  const value = String(specification || "").replace(/\s+/g, " ").trim();
-  if (!value || looksLikePromptEcho(value)) return `Performs the recurring ${profile.operation} task described by the verified examples.`;
-  return value.slice(0, 500);
-}
-
-function cleanDatasetExamples(examples) {
-  const byInput = new Map();
-  for (const item of Array.isArray(examples) ? examples : []) {
-    const input = String(item?.input || "").trim().slice(0, 500);
-    const output = String(item?.output || "").trim().slice(0, 500);
-    if (!input || !output || looksLikePromptEcho(input) || looksLikePromptEcho(output)) continue;
-    const key = input.toLowerCase().replace(/\s+/g, " ");
-    const existing = byInput.get(key);
-    if (existing && existing.output !== output) {
-      byInput.delete(key);
-      continue;
-    }
-    if (!existing) byInput.set(key, { input, output });
+  if (disagreements.length && metrics.coverage?.closestPath) {
+    lines.push(`Evidence check: the closest computation (${metrics.coverage.closestPath}) could not reproduce ${disagreements.length} recorded answer${disagreements.length === 1 ? "" : "s"}: ${disagreements.map((pair) => `"${pair.output}"`).join(", ")}. Two answers cannot both describe one computation, so this task is filed as a verified lookup instead`);
   }
-  return [...byInput.values()];
+  const missing = uncoveredBranches(tool.program);
+  if (missing.length) lines.push(`Uncovered branches: ${missing.join(", ")} (the program declines instead of guessing)`);
+  if (programSummary(tool.program).family === "table") lines.push("Generalization note: this task has no rule that reproduces the demonstrations, so it was compiled as a verified lookup that answers observed inputs and declines the rest");
+  lines.push(`${heading}: ${tool.executions || 0} run${(tool.executions || 0) === 1 ? "" : "s"}, ${tool.executions ? Math.round((tool.totalLatencyMs || 0) / tool.executions) : 0}ms average, no model call`);
+  return lines.join("\n");
 }
 
-function datasetMetadata(all, seedCount, status = "background synthesis queued") {
-  const trainCount = Math.floor(all.length * 0.7);
-  const validationCount = Math.floor(all.length * 0.15);
-  return {
-    seed: seedCount,
-    generated: Math.max(0, all.length - seedCount),
-    total: all.length,
-    target: DATASET_TARGET,
-    generationTarget: Math.min(DATASET_TARGET, Math.max(seedCount + 96, 256)),
-    split: {
-      train: trainCount,
-      validation: validationCount,
-      test: Math.max(0, all.length - trainCount - validationCount),
-    },
-    status,
-    sample: all.slice(0, 12),
-  };
+function declineInfo(tool, reason) {
+  return [
+    `Program: ${tool.name}`,
+    `Status: declined this request`,
+    `Reason: ${reason}`,
+    `Verified input language: ${tool.summary?.path || programListing(tool.program).join(" → ")}`,
+    "Fallback: answered by the model instead, because the compiled program has no verified rule for this input",
+  ].join("\n");
 }
 
-async function generateDataset(specification, seedSamples, creds = null, onProgress = null) {
-  const seed = cleanDatasetExamples(seedSamples);
-  const generationTarget = Math.min(DATASET_TARGET, Math.max(seed.length + 96, 256));
-  let all = [...seed];
-  let attempts = 0;
-  while (all.length < generationTarget && attempts < 10) {
-    attempts += 1;
-    const remaining = generationTarget - all.length;
-    const batchCount = Math.min(4, Math.ceil(remaining / 24));
-    const requests = Array.from({ length: batchCount }, () =>
-      callLLMJson(buildDatasetPrompt(specification, all, Math.min(remaining, 24)), "default", creds)
-    );
-    const results = await Promise.allSettled(requests);
-    const next = results.flatMap((result) => result.status === "fulfilled" ? result.value.data?.examples || [] : []);
-    const previousLength = all.length;
-    all = cleanDatasetExamples([...all, ...next]);
-    if (all.length === previousLength) break;
-    onProgress?.(datasetMetadata(all, seed.length, "background synthesis running"));
-  }
-  const status = all.length >= generationTarget ? "initial dataset target met; full target may continue in background" : "background synthesis incomplete; only valid examples retained";
-  return datasetMetadata(all, seed.length, status);
-}
-
-async function compileToolFrom(members, currentText, currentProfile, currentVec, creds = null) {
-  const samples = verifiedSamples(members);
-  const compileSamples = [...samples, { input: currentText, output: null }];
-  const { data } = await callLLMJson(buildCompilePrompt(compileSamples), "default", creds);
-  const texts = [...members.map((m) => m.text), currentText];
-  const vecs = [...members.map((m) => m.vector), currentVec];
-  const specification = safeSpecification(data.specification, currentProfile);
-  const dataset = datasetMetadata(samples, samples.length);
-  const tool = {
-    id: nanoid(),
-    name: sanitizeName(data.name) || `${currentProfile.domain}-${currentProfile.operation}`,
-    specification,
-    description: registryDescription({ specification, examples: samples, sourceTasks: texts }, currentProfile),
-    // Runtime prompting uses only observed examples. Synthetic candidates are
-    // recorded as dataset metadata until a real trainer validates them.
-    examples: samples.slice(0, 6).map((e) => ({ input: String(e.input).slice(0, 300), output: String(e.output).slice(0, 300) })),
-    dataset,
-    sourceTasks: texts.slice(0, 6),
-    profile: currentProfile,
-    runtime: "contract-guided model program",
-    trainingStatus: "teacher dataset synthesis queued in background; separate neural-weight training not run in this Node build",
-    accuracy: null,
-    embedding: centroid(vecs),
-    createdAt: Date.now(),
-    executions: 0,
-    totalLatencyMs: 0,
-  };
-  db.data.tools.unshift(tool);
-  // Do not block the chat response while generating the larger teacher dataset.
-  generateDataset(specification, samples, creds, (progress) => {
-    Object.assign(tool, { dataset: progress });
-    db.write().catch(() => {});
-  }).then((finalDataset) => {
-    Object.assign(tool, { dataset: finalDataset });
-    db.write().catch(() => {});
-  }).catch(() => {});
-  const memberIds = new Set(members.map((m) => m.id));
-  db.data.pending = db.data.pending.filter((p) => !memberIds.has(p.id));
-  return tool;
-}
+// ---------------------------------------------------------------------------
+// pipeline
+// ---------------------------------------------------------------------------
 
 async function processTask(chat, text, tier, creds = null) {
   const profile = profileTask(text);
   const vec = embed(text);
   const { best, bestSim } = bestMatch(profile, vec);
 
-  // A compiled tool always gets first refusal. Even deterministic or simple
-  // requests must explicitly offer the existing tool instead of creating a
-  // second tool for the same task family.
   if (best && bestSim >= MATCH_THRESHOLD) {
-    return [msg({ role: "assistant", kind: "offer", offerType: "use", toolId: best.id, toolName: best.name, toolSpec: best.specification, similarity: bestSim, taskText: text, resolved: null })];
+    const activation = gateScore(best.neural, text);
+    // The head carries the boundary it learned at compile time; GATE_MIN only
+    // applies to tools compiled before that boundary existed. It acts in two
+    // directions: a strong match runs the program, and the head can also promote
+    // a drifted phrasing into the run-now band by recognising it as in
+    // distribution. It never blocks a strong match, because a compiled program
+    // that cannot read the request declines on its own.
+    const activationFloor = best.neural?.threshold ?? GATE_MIN;
+    const confidentMatch = bestSim >= AUTO_RUN_THRESHOLD;
+    const recognisedByHead = activation >= activationFloor;
+    if (confidentMatch || recognisedByHead) {
+      const run = await runProgramTool(best, text);
+      if (run.ok) {
+        return [msg({ role: "assistant", kind: "text", text: run.text, viaTool: best.name, latency: run.ms, toolTrace: run.trace, programRun: true, similarity: bestSim })];
+      }
+      const fallback = await callLLM(buildGeneralPrompt(text), tier, creds);
+      await recordLog({ type: "general", latencyMs: fallback.latencyMs });
+      return [
+        msg({ role: "system", kind: "program_info", text: declineInfo(best, run.reason) }),
+        msg({ role: "assistant", kind: "text", text: fallback.text, tierApplied: tier, latency: fallback.latencyMs }),
+      ];
+    }
+    return [msg({ role: "assistant", kind: "offer", offerType: "use", toolId: best.id, toolName: best.name, toolSpec: best.specification, similarity: bestSim, activation, taskText: text, resolved: null })];
   }
 
   const asksIdentity = /\b(what|who)\s+(are|is)\s+(you|recur|this chatbot|this assistant)\b/i.test(text) || /\bwhat does recur do\b/i.test(text) || /\b(what|which)\s+(model|version|tier)\b/i.test(text) || /\bwhat (model|version) are you (using|running)\b/i.test(text) || /\bwhich model (are you|do you)\b/i.test(text);
   if (asksIdentity) return [msg({ role: "assistant", kind: "text", text: identityReply(tier), tierApplied: tier, latency: 0 })];
 
   const cluster = clusterFor(profile, vec);
-  if (cluster.length >= CLUSTER_SIZE - 1) {      return [msg({ role: "assistant", kind: "offer", offerType: "create", clusterCount: cluster.length + 1, clusterExamples: uniqueExamples(cluster).slice(0, 4).map((c) => c.text), clusterMemberIds: cluster.map((c) => c.id), taskText: text, resolved: null })];
+  if (cluster.length >= CLUSTER_SIZE - 1) {
+    return [msg({
+      role: "assistant",
+      kind: "offer",
+      offerType: "create",
+      clusterCount: cluster.length + 1,
+      clusterExamples: uniqueExamples(cluster).slice(0, 4).map((item) => item.text),
+      clusterMemberIds: cluster.map((item) => item.id),
+      taskText: text,
+      resolved: null,
+    })];
   }
 
   const r = await callLLM(buildGeneralPrompt(text), tier, creds);
@@ -300,7 +416,7 @@ async function resolveOffer(chat, offerMsg, action, tier, creds = null) {
   const out = [];
   if (action === "clarify") {
     offerMsg.resolved = "clarify";
-    const ctx = offerMsg.offerType === "use" ? `I have an existing tool for: "${offerMsg.toolSpec}". Check whether this task really fits.` : "I'm deciding whether to compile a reusable tool from a few strongly similar requests.";
+    const ctx = offerMsg.offerType === "use" ? `I have an existing program for: "${offerMsg.toolSpec}". Check whether this task really fits.` : "I'm deciding whether to compile a reusable program from a few strongly similar requests.";
     const r = await callLLM(buildClarifyPrompt(offerMsg.taskText, ctx), "quick", creds);
     out.push(msg({ role: "assistant", kind: "text", text: r.text }));
     chat.awaiting = { originalText: offerMsg.taskText };
@@ -313,45 +429,84 @@ async function resolveOffer(chat, offerMsg, action, tier, creds = null) {
     out.push(msg({ role: "assistant", kind: "text", text: r.text, tierApplied: tier, latency: r.latencyMs }));
     if (offerMsg.offerType === "create" && offerMsg.clusterMemberIds) {
       const ids = new Set(offerMsg.clusterMemberIds);
-      db.data.pending = db.data.pending.filter((p) => !ids.has(p.id));
+      db.data.pending = db.data.pending.filter((pending) => !ids.has(pending.id));
     }
     return out;
   }
   if (action === "use") {
     offerMsg.resolved = "use";
-    const tool = db.data.tools.find((t) => t.id === offerMsg.toolId);
+    const tool = db.data.tools.find((candidate) => candidate.id === offerMsg.toolId);
     if (!tool) throw Object.assign(new Error("That tool no longer exists."), { code: "not_found" });
-    const r = await runTool(tool, offerMsg.taskText, creds);
-    out.push(msg({ role: "assistant", kind: "text", text: r.text, viaTool: tool.name, latency: r.latencyMs }));
-    await recordLog({ type: "hit", toolId: tool.id, toolName: tool.name, latencyMs: r.latencyMs });
-    bumpTool(tool, r.latencyMs);
-    return out;
+    // The user asked for the compiled program, so the compiled program runs.
+    // This path never calls a model to produce the answer.
+    const run = await runProgramTool(tool, offerMsg.taskText);
+    if (run.ok) {
+      out.push(msg({ role: "assistant", kind: "text", text: run.text, viaTool: tool.name, latency: run.ms, toolTrace: run.trace, programRun: true }));
+      return out;
+    }
+    out.push(msg({ role: "system", kind: "program_info", text: declineInfo(tool, run.reason) }));
   }
   if (action === "create") {
     offerMsg.resolved = "create";
-    const members = db.data.pending.filter((p) => offerMsg.clusterMemberIds.includes(p.id));
+    const members = db.data.pending.filter((pending) => (offerMsg.clusterMemberIds || []).includes(pending.id));
     const currentProfile = profileTask(offerMsg.taskText);
     const vec = embed(offerMsg.taskText);
     const existing = db.data.tools.find((candidate) => isReusableTool(candidate) && (taskSimilarity(currentProfile, vec, candidate) >= MATCH_THRESHOLD || usableProfile(candidate)?.fingerprint === currentProfile.fingerprint));
+    let tool = existing || null;
     if (existing) {
       offerMsg.resolved = "existing";
-      const r = await runTool(existing, offerMsg.taskText, creds);
-      out.push(msg({ role: "assistant", kind: "text", text: r.text, viaTool: existing.name, latency: r.latencyMs }));
-      bumpTool(existing, r.latencyMs);
-      await recordLog({ type: "hit", toolId: existing.id, toolName: existing.name, latencyMs: r.latencyMs });
-      return out;
+      const memberIds = new Set(members.map((member) => member.id));
+      db.data.pending = db.data.pending.filter((pending) => !memberIds.has(pending.id));
+    } else {
+      const compiled = await compileToolFrom(members, offerMsg.taskText, currentProfile, vec);
+      if (!compiled.tool) {
+        const discarded = compiled.discarded || [];
+        out.push(msg({
+          role: "system",
+          kind: "program_info",
+          text: [
+            "Program: not compiled",
+            `Reason: ${compiled.reason}`,
+            `Evidence: ${(discarded.length ? `${discarded.length} conflicting input${discarded.length === 1 ? "" : "s"} discarded, ` : "")}${members.length} request${members.length === 1 ? "" : "s"} in this cluster`,
+            "Fallback: this request is answered by the model instead, because no deterministic program fits the evidence",
+          ].join("\n"),
+        }));
+      } else {
+        tool = compiled.tool;
+        out.push(msg({ role: "system", kind: "program_info", text: programInfo(tool, "First execution") }));
+      }
     }
-    const tool = await compileToolFrom(members, offerMsg.taskText, currentProfile, vec, creds);
-    // Compilation deliberately emits exactly one explanatory message. The
-    // following assistant message is reserved for the original answer.
-    out.push(msg({ role: "system", kind: "program_info", text: programInfo(tool), toolName: tool.name }));
-    const r = await runTool(tool, offerMsg.taskText, creds);
-    out.push(msg({ role: "assistant", kind: "text", text: r.text, viaTool: tool.name, latency: r.latencyMs }));
-    await recordLog({ type: "hit", toolId: tool.id, toolName: tool.name, latencyMs: r.latencyMs });
-    bumpTool(tool, r.latencyMs);
-    return out;
+    if (tool) {
+      const run = await runProgramTool(tool, offerMsg.taskText);
+      if (run.ok) {
+        out.push(msg({ role: "assistant", kind: "text", text: run.text, viaTool: tool.name, latency: run.ms, toolTrace: run.trace, programRun: true }));
+        return out;
+      }
+      out.push(msg({ role: "system", kind: "program_info", text: declineInfo(tool, run.reason) }));
+    }
   }
-  throw Object.assign(new Error("Unknown action."), { code: "bad_request" });
+  if (action !== "create" && action !== "use") {
+    throw Object.assign(new Error("Unknown action."), { code: "bad_request" });
+  }
+  // Only reached when a compiled program declined the request or compilation had
+  // nothing to compile from. The request still needs an answer.
+  const r = await callLLM(buildGeneralPrompt(offerMsg.taskText), tier, creds);
+  await recordLog({ type: "general", latencyMs: r.latencyMs });
+  out.push(msg({ role: "assistant", kind: "text", text: r.text, tierApplied: tier, latency: r.latencyMs }));
+  return out;
 }
 
-export { processTask, resolveOffer, msg, MATCH_THRESHOLD, CLUSTER_THRESHOLD, CLUSTER_SIZE };
+export {
+  processTask,
+  resolveOffer,
+  accepts,
+  msg,
+  programInfo,
+  compileToolFrom,
+  runProgramTool,
+  verifiedPairs,
+  MATCH_THRESHOLD,
+  AUTO_RUN_THRESHOLD,
+  CLUSTER_THRESHOLD,
+  CLUSTER_SIZE,
+};

@@ -26,6 +26,10 @@ const TOKEN_ALIASES = new Map([
   ["number", "ordinal-item"],
 ]);
 
+// Families whose requests are the same computation with different values in
+// them, so an exact profile agreement is already strong evidence.
+const PARAMETRIC_INTENTS = new Set(["palindrome", "arithmetic", "sequence-element"]);
+
 const GENERIC = new Set([
   "test", "testing", "hello", "hi", "hey", "ok", "okay", "thanks", "thank", "cool", "yes", "no",
   "asdf", "abc", "abcd", "foo", "bar", "lorem", "something", "anything", "help",
@@ -42,7 +46,9 @@ function tokenize(text) {
   return (String(text || "").toLowerCase().match(/[a-z0-9+#.']+/g) || [])
     .map((t) => t.replace(/^['.]+|['.]+$/g, ""))
     .map((t) => TOKEN_ALIASES.get(t) || t)
-    .filter((t) => t.length > 1 && !STOP.has(t));
+    // Single digits are content in arithmetic and sequence tasks ("what is 6
+    // times 7"), so they are kept while one-letter words are noise.
+    .filter((t) => (t.length > 1 || /[0-9]/.test(t)) && !STOP.has(t));
 }
 
 function hashToken(tok) {
@@ -129,7 +135,14 @@ function profileTask(text) {
   const intent = detectIntent(raw, tokens);
   const domain = detectDomain(tokens, intent);
   const operation = detectOperation(raw, intent);
-  const meaningful = raw.length >= 8 && tokens.length >= 2 && intent !== "generic" && !tokens.every((token) => GENERIC.has(token));
+  const wordTokens = tokens.filter((token) => /[a-z]/.test(token));
+  const numeric = /\d/.test(raw);
+  // Parametric families repeat with different values in the same frame, so one
+  // content word plus a number is already a real task ("what is 6 times 7").
+  // Everything else still needs two content words before it counts as a task
+  // worth clustering.
+  const contentful = wordTokens.length >= 2 || (PARAMETRIC_INTENTS.has(intent) && numeric && tokens.length > 0);
+  const meaningful = raw.length >= 6 && contentful && intent !== "generic" && !tokens.every((token) => GENERIC.has(token));
   const keywords = [...new Set(tokens)].slice(0, 32);
   return {
     version: 3,
@@ -155,8 +168,15 @@ function hybridSimilarity(a, b, vectorSimilarity = 0) {
   // classification program survive natural paraphrases without merging
   // unrelated questions.
   if (sameShape) {
-    if (!["palindrome", "arithmetic"].includes(a.intent) && overlap < 0.25) return 0;
-    return Math.min(1, 0.76 + overlap * 0.16 + Math.max(0, vectorSimilarity) * 0.08);
+    // Parametric tasks are repeated with fresh values: "what is 6 times 7" and
+    // "what is 2 plus 2" share almost no vocabulary, yet they are the same
+    // recurring computation. For these families the profile agreement carries
+    // the match and the words only refine it.
+    const parametric = PARAMETRIC_INTENTS.has(a.intent) || a.operation === "reverse-text";
+    if (!parametric && overlap < 0.25) return 0;
+    const base = parametric ? 0.86 : 0.76;
+    const keywordWeight = parametric ? 0.08 : 0.16;
+    return Math.min(1, base + overlap * keywordWeight + Math.max(0, vectorSimilarity) * 0.08);
   }
   if (a.domain !== b.domain || overlap < 0.35) return 0;
   return Math.min(1, 0.62 + overlap * 0.22 + Math.max(0, vectorSimilarity) * 0.16);

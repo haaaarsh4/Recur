@@ -50,9 +50,10 @@ export default function HomeView({ user, toolsCount, stats, onGoChat, onGoTools,
             <summary>What is a reusable tool?</summary>
             <div className="details-content">
               <p>
-                A reusable tool is a small, focused instruction created from a pattern in your requests. It contains a
-                clear description of the task, a few examples, and a matching fingerprint. When a future request looks
-                similar, Recur can offer that tool instead of starting from scratch.
+                A reusable tool is a real program compiled from a pattern in your requests. Recur takes the answers you
+                already confirmed, drops any input that once produced two different answers, then searches for the
+                smallest computation that reproduces every remaining example exactly. What comes out is executable: a
+                read step, a few operators, and an answer step, stored with the evidence behind it.
               </p>
             </div>
           </details>
@@ -60,9 +61,11 @@ export default function HomeView({ user, toolsCount, stats, onGoChat, onGoTools,
             <summary>How does the neural logic work?</summary>
             <div className="details-content">
               <p>
-                Each request becomes a compact text vector made from its words and word pairs. Recur compares those
-                vectors with cosine similarity. A close match can trigger a reuse offer, while several related unmatched
-                requests can form a new pattern. The language model then writes the tool description and examples.
+                Each request becomes a compact vector from its words and word pairs, and a task profile records the
+                intent, domain and operation. Matching needs both to agree, so unrelated questions never merge. A
+                compiled program also carries a small acceptance head: a network trained on your own examples, in your
+                own process, that decides whether a new request is inside the program's learned input distribution
+                before it runs on its own. Reuse itself is a plain function call with no model involved.
               </p>
             </div>
           </details>
@@ -70,9 +73,10 @@ export default function HomeView({ user, toolsCount, stats, onGoChat, onGoTools,
             <summary>How do I get started?</summary>
             <div className="details-content">
               <p>
-                Connect an OpenAI or Anthropic key from Integrations, open Chat, and work as usual. After a few requests
-                with the same shape, Recur will show an offer card. Accept it to create a tool, decline it to continue
-                normally, or ask for clarification first.
+                Connect a provider from Integrations, or keep using Ollama locally, then open Chat and work as usual.
+                After a few requests with the same shape, Recur offers to compile a program from them. Accept it and the
+                program answers that request immediately, in milliseconds, with its full execution trace shown in the
+                thread. Decline it and your request is simply answered by the model as before.
               </p>
             </div>
           </details>

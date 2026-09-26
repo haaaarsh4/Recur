@@ -1,4 +1,5 @@
 import fs from "fs";
+import os from "os";
 import path from "path";
 import { fileURLToPath } from "url";
 import { Low } from "lowdb";
@@ -6,18 +7,41 @@ import { JSONFile } from "lowdb/node";
 import { profileTask } from "./embeddings.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const file = path.join(__dirname, "..", "data", "db.json");
-// db.json is gitignored, so fresh deploys (Render, Railway) do not have the
-// data directory at all. lowdb writes through a .tmp sibling file and would
-// crash with ENOENT on the first save. Create the directory before anything
-// tries to write.
-fs.mkdirSync(path.dirname(file), { recursive: true });
+
+// db.json is gitignored, so fresh deploys do not have the data directory at
+// all. lowdb writes through a .tmp sibling file, so the directory has to exist
+// and be writable before anything tries to save, or every request would fail
+// with ENOENT or EACCERO. Serverless hosts such as Vercel mount the project
+// bundle read-only and leave the system temp directory as the only writable
+// place, so fall back to it.
+function resolveDbFile() {
+  if (process.env.RECUR_DB_PATH) return path.resolve(process.env.RECUR_DB_PATH);
+  const inTemp = path.join(os.tmpdir(), "recur-data", "db.json");
+  // A Vercel function mounts the project bundle read-only and leaves /tmp as
+  // the only writable place, so go straight there instead of attempting a
+  // write that is guaranteed to fail.
+  const candidates = process.env.VERCEL
+    ? [inTemp]
+    : [path.join(__dirname, "..", "data", "db.json"), inTemp];
+  for (const candidate of candidates) {
+    try {
+      fs.mkdirSync(path.dirname(candidate), { recursive: true });
+      fs.accessSync(path.dirname(candidate), fs.constants.W_OK);
+      return candidate;
+    } catch {
+      // Not writable here, so try the next location.
+    }
+  }
+  throw new Error("Recur found no writable directory for its database. Set RECUR_DB_PATH to a writable path.");
+}
+
+const file = resolveDbFile();
 
 const defaultData = {
   users: [],   // { id, email, passwordHash, name, createdAt }
   chats: [],   // { id, userId, guest, title, messages:[], awaiting, createdAt, updatedAt }
-  tools: [],   // { id, name, specification, examples, sourceTasks, embedding, createdAt, executions, totalLatencyMs }
-  pending: [], // { id, text, vector, createdAt }
+  tools: [],   // compiled programs: { id, name, specification, program, tests, metrics, neural, executions, totalLatencyMs }
+  pending: [], // { id, text, profile, vector, output, createdAt }
   log: [],     // { id, type: 'hit'|'general', toolId?, toolName?, latencyMs, ts }
 };
 
@@ -31,14 +55,24 @@ function inferredLegacySpecification(tool, profile) {
   return `Perform the recurring ${profile.operation || "task"} computation in the ${profile.domain || "general"} domain.`;
 }
 
+// Registry copy is generated from the artifact itself, so what the registry says
+// about a program is always what the program really is.
 function registryDescription(tool, profile) {
-  const specification = String(tool.specification || "").replace(/\s+/g, " ").trim();
-  const examples = (tool.examples || []).length;
-  const sources = (tool.sourceTasks || []).length;
-  const task = specification && !/^handles recurring|^performs the recurring/i.test(specification)
-    ? specification.charAt(0).toLowerCase() + specification.slice(1).replace(/[.]$/, "")
-    : `the recurring ${profile.operation} computation in the ${profile.domain} domain`;
-  return `This reusable program is designed to ${task}. It accepts a new request from the same task family, applies the behavior inferred from verified demonstrations, and returns the computed result rather than a general explanation. The registry currently records ${examples} verified behavior example${examples === 1 ? "" : "s"} from ${sources} source request${sources === 1 ? "" : "s"}; future executions are matched to this task contract before another program is created.`;
+  const metrics = tool.metrics || {};
+  const tests = (tool.tests || []).length;
+  const path = tool.summary?.path || (tool.listing || []).join(" → ");
+  const kind = tool.program
+    ? tool.summary?.family === "table"
+      ? "a verified lookup compiled from your own confirmed answers"
+      : "an executable program compiled from your own confirmed answers"
+    : "a legacy contract saved before programs were compiled, so it cannot run";
+  const evidence = tests
+    ? ` It was compiled from ${tests} verified demonstration${tests === 1 ? "" : "s"}, reproduces ${metrics.reproduced ?? tests}/${metrics.demonstrations ?? tests} of them exactly, and declines inputs its rules do not cover instead of guessing.`
+    : " It holds no verified demonstrations yet.";
+  const flow = path ? ` The compiled path is: ${path}.` : "";
+  const operation = profile?.operation ? ` Task family: ${profile.operation} (${profile.domain}).` : "";
+  const runtime = tool.program ? " It executes locally and deterministically, with no model call at reuse time." : "";
+  return `This tool is ${kind}.${evidence}${flow}${operation}${runtime}`;
 }
 
 async function init() {
@@ -61,7 +95,7 @@ async function init() {
     const name = String(tool.name || "").toLowerCase();
     if (!name || /(?:kebab-case-name|semantic-kebab-name|placeholder)/.test(name)) return false;
     const seenInputs = new Set();
-    for (const example of tool.examples || []) {
+    for (const example of tool.tests || tool.examples || []) {
       const input = String(example.input || "").toLowerCase().replace(/\s+/g, " ").trim();
       if (!input || seenInputs.has(input)) return false;
       seenInputs.add(input);
@@ -69,6 +103,12 @@ async function init() {
     return true;
   });
   if (db.data.tools.length !== beforeTools) changed = true;
+  // Observations without a recorded answer can never be evidence for a program:
+  // there is nothing to reproduce. Older builds stored repetition counters with
+  // no answers at all, and keeping them only pollutes the next cluster.
+  const beforePending = db.data.pending.length;
+  db.data.pending = db.data.pending.filter((pending) => String(pending?.output || "").trim());
+  if (db.data.pending.length !== beforePending) changed = true;
   // Keep one canonical program per task family. Older versions could compile
   // the same family twice when their fingerprint matcher missed a paraphrase.
   const canonical = new Map();
@@ -88,23 +128,23 @@ async function init() {
       tool.profile = profile;
       changed = true;
     }
-    // Legacy compilers sometimes saved one concrete answer as the whole task
-    // description (for example, "the 8th number is 13"). Replace that stale
-    // description with an honest generic contract instead of presenting it as
-    // the reusable program's definition.
-    if (/^(?:handles recurring|performs the recurring)/i.test(String(tool.specification || "")) || /\b\d+(?:st|nd|rd|th)\b.*\b(?:is|equals)\b/i.test(String(tool.specification || ""))) {
-      tool.specification = inferredLegacySpecification(tool, profile);
-      changed = true;
+    // Tools saved by the earlier prompt-based compiler hold no program. They are
+    // kept visible for history but marked so nothing can execute them.
+    if (!tool.program || !tool.program.version) {
+      if (tool.status !== "legacy") {
+        tool.status = "legacy";
+        changed = true;
+      }
+      if (/^(?:handles recurring|performs the recurring)/i.test(String(tool.specification || "")) || /\b\d+(?:st|nd|rd|th)\b.*\b(?:is|equals)\b/i.test(String(tool.specification || ""))) {
+        tool.specification = inferredLegacySpecification(tool, profile);
+        changed = true;
+      }
+      delete tool.dataset;
+      delete tool.trainingStatus;
     }
     const description = registryDescription(tool, profile);
     if (tool.description !== description) {
       tool.description = description;
-      changed = true;
-    }
-    if (!tool.dataset || (tool.dataset.target || 0) < 2000) {
-      const count = tool.examples?.length || 0;
-      tool.dataset = { seed: count, generated: 0, total: count, target: 2000, generationTarget: 256, split: { train: Math.floor(count * 0.7), validation: Math.floor(count * 0.15), test: count - Math.floor(count * 0.7) - Math.floor(count * 0.15) }, status: "legacy dataset; new synthesis required" };
-      tool.trainingStatus = "legacy contract; separate neural-weight training not run; recompile to synthesize the larger dataset";
       changed = true;
     }
   }
@@ -129,4 +169,4 @@ async function init() {
   if (changed) await db.write();
 }
 
-export { db, init, registryDescription, inferredLegacySpecification };
+export { db, init, registryDescription, inferredLegacySpecification, file as dbFile };
