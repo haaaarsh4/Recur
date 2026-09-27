@@ -8,12 +8,12 @@ export default function OfferCard({ m, onResolve }) {
         A compiled program already covers this: <b>{m.toolName}</b>. Run it, or answer from scratch?
       </>
     ) : (
-      <>I've identified a recurring task in {m.clusterCount} requests. Compile an executable program from them so it can be answered locally from now on?</>
+      <>I've identified a recurring task in {m.clusterCount} requests. Compile an executable program from them, so it can be run locally, with no model call, whenever you pick it?</>
     );
   const meta =
     m.offerType === "use"
       ? `${Math.round(m.similarity * 100)}% match${m.activation != null ? ` · acceptance ${Math.round(m.activation * 100)}%` : ""} · ${m.toolSpec || ""}`
-      : `similar to: ${(m.clusterExamples || []).slice(0, 2).join(" · ")}`;
+      : [m.clusterNote, `similar to: ${(m.clusterExamples || []).slice(0, 2).join(" · ")}`].filter(Boolean).join(" · ");
 
   return (
     <div className="msg-row assistant">
@@ -44,6 +44,8 @@ export default function OfferCard({ m, onResolve }) {
           <div className="offer-resolved">
             {m.resolved === "use"
               ? "→ ran the compiled program locally"
+              : m.resolved === "existing"
+              ? "→ the program already registered for this task answered it locally"
               : m.resolved === "create"
               ? "→ compiled the program and ran it locally"
               : m.resolved === "clarify"

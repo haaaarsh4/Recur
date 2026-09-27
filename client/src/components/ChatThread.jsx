@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import OfferCard from "./OfferCard.jsx";
+import { formatMs } from "../format.js";
 import { ArrowUp, Check, Copy, Paperclip, Puzzle, RefreshCw, Search, Sparkles, X } from "lucide-react";
 
 const EXAMPLES = [
@@ -102,7 +103,7 @@ export default function ChatThread({ chat, chatFading = false, draft = "", onDra
       {!showThread ? (
         <div className="greet">
           <h1 className="welcome-line">Welcome to Recur<span className="dot">.</span></h1>
-          <p className="greet-sub">Builds reusable tools from tasks you repeat, and always asks before using one.</p>
+          <p className="greet-sub">Builds reusable tools from tasks you repeat, and answers with them locally once you approve one.</p>
         </div>
       ) : (
         <div key={chat?.id || "new-chat"} className="thread">
@@ -243,7 +244,21 @@ function Message({ m, animate = false, enterDelay = 0, onResolve, onRetry }) {
         <div className="program-info-card">
           <div className="program-info-heading"><Puzzle /> Program details</div>
           {String(m.text || "").split("\n").map((line, i) => {
-            const [label, ...rest] = line.split(": ");
+            const trimmed = line.trim();
+            // Lines that start with a dash are the recorded replies a program set
+            // aside, each with the reason. They use the same two columns as every
+            // other line, with the label column left empty, so the detail text
+            // starts exactly under the value it belongs to however long the
+            // labels are.
+            if (trimmed.startsWith("- ")) {
+              return (
+                <div className="program-info-line program-info-note" key={i}>
+                  <span aria-hidden="true" />
+                  <em>{trimmed.slice(2)}</em>
+                </div>
+              );
+            }
+            const [label, ...rest] = trimmed.split(": ");
             return <div className="program-info-line" key={i}><span>{label}</span>{rest.join(": ")}</div>;
           })}
         </div>
@@ -270,7 +285,7 @@ function Message({ m, animate = false, enterDelay = 0, onResolve, onRetry }) {
         {m.viaTool && (
           <div className="via-tool-label">
             <Puzzle /> Compiled program: <b>{m.viaTool}</b>
-            <span className="via-tool-meta">{m.latency != null ? `${m.latency}ms` : "local"} · no model call</span>
+            <span className="via-tool-meta">{formatMs(m.latency)} · no model call</span>
           </div>
         )}
         {m.viaTool && m.toolTrace?.length ? (

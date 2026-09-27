@@ -12,7 +12,7 @@ export default function HomeView({ user, toolsCount, stats, onGoChat, onGoTools,
             Welcome{user?.name ? `, ${user.name}` : ""}<span className="dot">.</span>
           </h1>
           <p className="home-lede">
-            Builds reusable tools from tasks you repeat, and always asks before using one.
+            Builds reusable tools from tasks you repeat, and answers with them locally once you approve one.
           </p>
           <div className="home-actions">
             <button className="home-btn solid" type="button" onClick={onGoChat}>Open chat</button>
@@ -36,7 +36,7 @@ export default function HomeView({ user, toolsCount, stats, onGoChat, onGoTools,
             <div className="home-workflow-item">
               <span className="workflow-number">03</span>
               <h3>You stay in control</h3>
-              <p>Recur asks before creating or using anything. Every decision is yours.</p>
+              <p>Compiling a program is always offered, never automatic, and every reply a program produces is labelled with it. Ask for the model instead whenever you prefer.</p>
             </div>
           </div>
         </section>
@@ -64,8 +64,9 @@ export default function HomeView({ user, toolsCount, stats, onGoChat, onGoTools,
                 Each request becomes a compact vector from its words and word pairs, and a task profile records the
                 intent, domain and operation. Matching needs both to agree, so unrelated questions never merge. A
                 compiled program also carries a small acceptance head: a network trained on your own examples, in your
-                own process, that decides whether a new request is inside the program's learned input distribution
-                before it runs on its own. Reuse itself is a plain function call with no model involved.
+                own process, that decides whether a new request is inside the program's learned input distribution. A
+                program that matches is offered to you by name, and it runs only when you choose it. Reuse itself is a
+                plain function call with no model involved.
               </p>
             </div>
           </details>

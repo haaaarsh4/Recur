@@ -210,6 +210,14 @@ kbd { padding: 1px 5px; color: #777; border: 1px solid #353535; border-radius: 4
 .program-info-heading svg { width: 14px; height: 14px; }
 .program-info-line { display: grid; grid-template-columns: 145px 1fr; gap: 12px; padding: 5px 0; color: #9e9e9e; border-top: 1px solid #252525; font-size: 12px; line-height: 1.45; }
 .program-info-line span { color: #707070; font-weight: 600; }
+/* A detail line under a heading: same two columns as every other line, so the
+   text lines up under the value above it, with the bullet hanging in the gutter
+   instead of shifting the text. */
+.program-info-note { border-top-color: #1f1f1f; color: #7f7f7f; font-size: 11.5px; }
+.program-info-note em { position: relative; display: block; font-style: normal; }
+/* The bullet hangs in the column gap, so the text itself lines up with the value
+   above it rather than being pushed across by its own marker. */
+.program-info-note em::before { content: "-"; position: absolute; left: -12px; color: #5a5a5a; }
 .sys-pill { display: inline-flex; align-items: center; gap: 6px; padding: 7px 11px; color: #c9c9c9; border: 1px solid #3d3d3d; border-radius: 99px; background: #222; font: 11px var(--font); }
 .sys-pill svg { width: 13px; height: 13px; }
 .typing { display: flex; align-items: center; gap: 4px; padding: 4px 1px; }
@@ -247,8 +255,16 @@ kbd { padding: 1px 5px; color: #777; border: 1px solid #353535; border-radius: 4
 .tool-list { display: flex; flex-direction: column; gap: 10px; padding-top: 22px; }
 .tool-row { padding: 0; border: 1px solid #303030; border-radius: 11px; background: #151515; overflow: hidden; }
 .tool-row:hover, .tool-row.open { border-color: #484848; }
-.tool-row-toggle { display: block; width: 100%; padding: 16px 17px; color: inherit; text-align: left; border: 0; background: transparent; }
+.tool-row-head { display: flex; align-items: stretch; }
+.tool-row-toggle { display: block; flex: 1 1 auto; min-width: 0; padding: 16px 17px; color: inherit; text-align: left; border: 0; background: transparent; }
 .tool-row-toggle:hover { background: rgba(255,255,255,.018); }
+/* One program can be removed without clearing the whole registry: the control
+   sits at the end of its own row, on the same line as the name. */
+.tool-row-delete { display: grid; place-items: center; flex: 0 0 auto; width: 48px; padding: 0; color: #6d6d6d; border: 0; border-left: 1px solid #262626; background: transparent; }
+.tool-row-delete:hover { color: #e6e6e6; background: rgba(255,255,255,.035); }
+.tool-row-delete svg { width: 15px; height: 15px; }
+.tool-row-delete:disabled, .tv-footer button:disabled, .confirm-row button:disabled { opacity: .45; cursor: default; }
+.row-confirm { padding: 0 17px 15px; margin-top: 0; }
 .tool-row-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 14px; }
 .tool-row .name { color: #e8e8e8; font: 600 15px var(--font); }
 .tool-row .stats { color: #777; font: 13px var(--font); white-space: nowrap; }
@@ -267,6 +283,9 @@ kbd { padding: 1px 5px; color: #777; border: 1px solid #353535; border-radius: 4
 .registry-sample-in { color: #9a9a9a; overflow-wrap: anywhere; }
 .registry-sample-arrow { color: #4f4f4f; }
 .registry-sample-out { color: #cfcfcf; overflow-wrap: anywhere; }
+.registry-sample-flag { grid-column: 3; color: #7a6a52; font-size: 11px; }
+.tool-row.replaced .name { color: #a5a5a5; }
+.tool-status { margin-left: 8px; padding: 2px 7px; color: #8d8d8d; border: 1px solid #3a3a3a; border-radius: 999px; font: 500 10px var(--font); text-transform: uppercase; letter-spacing: .05em; vertical-align: middle; }
 @media (max-width: 620px) {
   .registry-sample { grid-template-columns: 1fr; gap: 2px; }
   .registry-sample-arrow { display: none; }
@@ -274,10 +293,12 @@ kbd { padding: 1px 5px; color: #777; border: 1px solid #353535; border-radius: 4
 .tool-detail { margin-top: 14px; padding-top: 14px; border-top: 1px dashed #333; font-size: 13.5px; }
 .empty { padding: 40px 4px; color: #777; text-align: center; font-size: 14.5px; line-height: 1.6; }
 .tv-footer { display: flex; justify-content: flex-end; margin-top: 24px; }
+.tv-footer .confirm-row { margin-top: 0; }
 .tv-footer button, .confirm-row button { padding: 9px 15px; color: #999; border: 1px solid #303030; border-radius: 8px; background: transparent; font-size: 13px; font-weight: 600; }
 .tv-footer button:hover, .confirm-row button:hover { color: #ddd; border-color: #484848; }
 .confirm-row { display: flex; align-items: center; justify-content: flex-end; gap: 9px; margin-top: 10px; color: #999; font-size: 13.5px; }
 .confirm-row .danger-btn { color: #fff; border-color: #9f4b56; background: #8c3844; font-weight: 700; }
+.tv-error { margin-top: 10px; color: #cf8f97; font-size: 13.5px; text-align: right; }
 
 .intg-card { margin-top: 4px; padding: 16px 17px; border: 1px solid #303030; border-radius: 11px; background: #151515; }
 .intg-status { display: flex; align-items: center; gap: 10px; color: #c9c9c9; font-size: 14px; }
@@ -348,7 +369,7 @@ kbd { padding: 1px 5px; color: #777; border: 1px solid #353535; border-radius: 4
 .home-details summary { display: flex; align-items: center; justify-content: space-between; padding: 18px 3px; color: #cfcfcf; cursor: pointer; list-style: none; font-size: 13.5px; font-weight: 600; transition: color .15s ease; }
 .home-details summary::-webkit-details-marker { display: none; }
 .home-details summary::after { content: '+'; color: #767676; font-size: 18px; font-weight: 400; }
-.home-details[open] summary::after { content: '−'; color: #a0a0a0; }
+.home-details[open] summary::after { content: '-'; color: #a0a0a0; }
 .home-details summary:hover { color: #fff; }
 .details-content { width: 100%; max-width: none; padding: 0 3px 20px; }
 .details-content p { margin: 0; color: #858585; font-size: 13px; line-height: 1.7; }
@@ -868,6 +889,10 @@ kbd { padding: 1px 5px; color: #777; border: 1px solid #353535; border-radius: 4
   .empty { padding: 30px 8px; font-size: 13.5px; line-height: 1.55; }
   .tv-footer { margin-top: 14px; }
   .tv-footer button { width: 100%; }
+  /* The question replaces the button, so its own controls stay inline and wrap
+     as a group instead of each stretching the full width. */
+  .tv-footer .confirm-row { flex-wrap: wrap; }
+  .tv-footer .confirm-row button { width: auto; }
   .auth-page { height: 100dvh; min-height: 100dvh; overflow: hidden; }
   .auth-frame { height: 100dvh; min-height: 0; padding: 12px 12px 14px; }
   .auth-nav { min-height: 34px; gap: 8px; }

@@ -60,6 +60,12 @@ export default function Workspace() {
   const refreshStats = useCallback(() => {
     api.getStats().then(setStats).catch(() => {});
   }, []);
+  // The header counts the programs that can actually answer, which is the same
+  // set the registry's own "programs compiled" number uses. Rows that are kept
+  // for history (a program a later compilation replaced, an old contract that
+  // holds nothing executable) stay visible in the registry but are not doing any
+  // work, so counting them here would contradict the page they link to.
+  const liveTools = tools.filter((tool) => tool.program && tool.status !== "superseded").length;
 
   useEffect(() => {
     if (loading) return;
@@ -158,10 +164,21 @@ export default function Workspace() {
     }
   }
 
+  // Both of these refresh what the registry shows, and both let the panel see a
+  // failure: a delete that silently does nothing is worse than one that says why
+  // it did nothing.
   async function resetLibrary() {
-    await api.resetTools();
+    const result = await api.resetTools();
     refreshTools();
     refreshStats();
+    return result;
+  }
+
+  async function deleteTool(id) {
+    const result = await api.deleteTool(id);
+    refreshTools();
+    refreshStats();
+    return result;
   }
 
   async function handleLogout() {
@@ -196,8 +213,8 @@ export default function Workspace() {
             <Menu size={19} />
           </button>
           <div className="topbar-right">
-            <button className="pill pill-outline" type="button" title="Compiled tools shared across everyone" onClick={() => setView("tools")}>
-              <Puzzle /> {tools.length} tool{tools.length === 1 ? "" : "s"}
+            <button className="pill pill-outline" type="button" title="Compiled programs shared across everyone" onClick={() => setView("tools")}>
+              <Puzzle /> {liveTools} tool{liveTools === 1 ? "" : "s"}
             </button>
             <button className="pill pill-solid" type="button" title="Share of tasks answered by a compiled tool instead of general reasoning">
               {stats?.reuseRate != null ? stats.reuseRate + "%" : "n/a"} reuse
@@ -232,11 +249,11 @@ export default function Workspace() {
             onResolveOffer={resolveOffer}
           />
         ) : view === "tools" ? (
-          <ToolsPanel tools={tools} stats={stats} onReset={resetLibrary} />
+          <ToolsPanel tools={tools} stats={stats} onReset={resetLibrary} onDeleteTool={deleteTool} />
         ) : view === "home" ? (
           <HomeView
             user={user}
-            toolsCount={tools.length}
+            toolsCount={liveTools}
             stats={stats}
             onGoChat={() => setView("chat")}
             onGoTools={() => setView("tools")}

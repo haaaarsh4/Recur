@@ -34,6 +34,7 @@ export const api = {
 
   listTools: () => request("/tools"),
   resetTools: () => request("/tools", { method: "DELETE" }),
+  deleteTool: (id) => request(`/tools/${encodeURIComponent(id)}`, { method: "DELETE" }),
   getStats: () => request("/stats"),
 
   getIntegration: () => request("/integrations"),

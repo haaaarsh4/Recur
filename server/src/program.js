@@ -13,6 +13,8 @@
 // pure function of (program, input): no model call, no network access, no
 // hidden state.
 
+import { profileTask } from "./embeddings.js";
+
 const COMPILER_VERSION = "recur-compiler/1.1";
 const RUNTIME = "recur-vm 1.1";
 const SEARCH_BUDGET = Math.max(500, Number(process.env.PROGRAM_SEARCH_BUDGET || 12000));
@@ -28,6 +30,10 @@ const FILLER = new Set([
   "in", "at", "on", "with", "and", "or", "word", "words", "string", "text", "phrase",
   "number", "numbers", "letter", "letters", "please", "again", "me", "you",
 ]);
+
+// Yes and no change the claim, not the wording that carries it, so they are
+// allowed to differ between two ways of wording the same answer.
+const WORDING_TOKENS = new Set([...FILLER, "yes", "no", "yep", "nope", "true", "false", "indeed", "correct", "incorrect", "sure", "certainly", "definitely", "not", "also", "then", "thus", "hence"]);
 
 function isText(v) {
   return typeof v === "string";
@@ -271,12 +277,17 @@ function anchoredRest(input, keyword, direction) {
   return cleaned || undefined;
 }
 
+// `label` is the one description of an operation, and it is written the way a
+// person would say it. The execution trace, the compiled path and the registry
+// line all read the same sentence parts, so a program can never be described as
+// something other than what it runs: an internal name or a raw operation dump
+// has nowhere to come from.
 const READERS = {
-  identity: { out: "text", label: "the whole request", run: (input) => normalizeSpaces(input) || undefined },
-  firstWord: { out: "text", label: "the first word", run: (input) => stripEdges(wordTokens(input)[0]) || undefined },
+  identity: { out: "text", label: "the request text", run: (input) => normalizeSpaces(input) || undefined },
+  firstWord: { out: "text", label: "the first word in the request", run: (input) => stripEdges(wordTokens(input)[0]) || undefined },
   lastWord: {
     out: "text",
-    label: "the last word",
+    label: "the last word in the request",
     run: (input) => {
       const tokens = wordTokens(input).map(stripEdges).filter(Boolean);
       return tokens.length ? tokens[tokens.length - 1] : undefined;
@@ -284,7 +295,7 @@ const READERS = {
   },
   quoted: {
     out: "text",
-    label: "the quoted span",
+    label: "the quoted text in the request",
     run: (input) => {
       const match = String(input).match(/["'`]([^"'`]{1,160})["'`]/);
       return match ? stripEdges(match[1]) : undefined;
@@ -307,12 +318,12 @@ const READERS = {
     },
   },
   expression: { out: "number", label: "the arithmetic expression in the request", run: (input) => evaluateArithmetic(input) },
-  ordinal: { out: "number", label: "the ordinal in the request", run: (input) => ordinalValue(input) },
-  wordList: { out: "list", label: "the request's words", run: (input) => wordTokens(input) },
+  ordinal: { out: "number", label: "the position number in the request", run: (input) => ordinalValue(input) },
+  wordList: { out: "list", label: "the words of the request", run: (input) => wordTokens(input) },
   wordBefore: { out: "text", label: 'the word before "{{keyword}}"', arg: "keyword", run: (input, arg) => anchoredWord(input, arg.keyword, "before") },
   wordAfter: { out: "text", label: 'the word after "{{keyword}}"', arg: "keyword", run: (input, arg) => anchoredWord(input, arg.keyword, "after") },
-  restAfter: { out: "text", label: 'everything after "{{keyword}}"', arg: "keyword", run: (input, arg) => anchoredRest(input, arg.keyword, "after") },
-  restBefore: { out: "text", label: 'everything before "{{keyword}}"', arg: "keyword", run: (input, arg) => anchoredRest(input, arg.keyword, "before") },
+  restAfter: { out: "text", label: 'the text after "{{keyword}}"', arg: "keyword", run: (input, arg) => anchoredRest(input, arg.keyword, "after") },
+  restBefore: { out: "text", label: 'the text before "{{keyword}}"', arg: "keyword", run: (input, arg) => anchoredRest(input, arg.keyword, "before") },
 };
 
 // ---------------------------------------------------------------------------
@@ -369,47 +380,47 @@ function nthSquare(n) {
 }
 
 const STEPS = {
-  lower: { in: ["text"], out: "text", label: "lowercased", run: (v) => v.toLowerCase() },
-  upper: { in: ["text"], out: "text", label: "uppercased", run: (v) => v.toUpperCase() },
-  collapse: { in: ["text"], out: "text", label: "spaces collapsed", run: (v) => normalizeSpaces(v) },
-  unquote: { in: ["text"], out: "text", label: "quotes trimmed", run: (v) => stripEdges(v) || undefined },
-  alnum: { in: ["text"], out: "text", label: "reduced to letters and digits", run: (v) => alnum(v) || undefined },
-  reverse: { in: ["text"], out: "text", label: "reversed", run: (v) => [...v].reverse().join("") },
-  sortChars: { in: ["text"], out: "text", label: "sorted by character", run: (v) => [...v].sort().join("") },
-  firstChar: { in: ["text"], out: "text", label: "first character", run: (v) => v.slice(0, 1) || undefined },
-  lastChar: { in: ["text"], out: "text", label: "last character", run: (v) => v.slice(-1) || undefined },
-  length: { in: ["text", "list"], out: "number", label: "length", run: (v) => (isList(v) ? v.length : [...v].length) },
-  countWords: { in: ["text"], out: "number", label: "word count", run: (v) => wordTokens(v).length },
-  countVowels: { in: ["text"], out: "number", label: "vowel count", run: (v) => (v.match(/[aeiou]/gi) || []).length },
-  countConsonants: { in: ["text"], out: "number", label: "consonant count", run: (v) => (v.match(/[bcdfghjklmnpqrstvwxyz]/gi) || []).length },
-  digitSum: { in: ["text", "number"], out: "number", label: "sum of digits", run: (v) => digitSum(v) },
-  toNumber: { in: ["text"], out: "number", label: "read as a number", run: (v) => (Number.isFinite(Number(v)) ? Number(v) : undefined) },
-  countChar: { in: ["text"], out: "number", label: 'count of the letter "{{letter}}"', param: "letter", run: (v, arg) => (v.toLowerCase().split(arg.letter).length - 1) },
-  charAt: { in: ["text"], out: "text", label: "character at position {{number}}", param: "ordinal-position", run: (v, arg) => v[arg.number - 1] || undefined },
-  equalsReversed: { in: ["text"], out: "bool", label: "text equals its own reverse", run: (v) => alnum(v).length > 0 && alnum(v) === [...alnum(v)].reverse().join("") },
-  equalsLiteral: { in: ["text"], out: "bool", label: 'text equals "{{token}}"', param: "token", run: (v, arg) => alnum(v) === alnum(arg.token) },
-  containsLiteral: { in: ["text"], out: "bool", label: 'text contains "{{token}}"', param: "token", run: (v, arg) => v.toLowerCase().includes(String(arg.token).toLowerCase()) },
-  startsWith: { in: ["text"], out: "bool", label: 'text starts with "{{token}}"', param: "token", run: (v, arg) => v.toLowerCase().startsWith(String(arg.token).toLowerCase()) },
-  endsWith: { in: ["text"], out: "bool", label: 'text ends with "{{token}}"', param: "token", run: (v, arg) => v.toLowerCase().endsWith(String(arg.token).toLowerCase()) },
-  isDigits: { in: ["text"], out: "bool", label: "text is all digits", run: (v) => /^\d+$/.test(v) },
-  isUpper: { in: ["text"], out: "bool", label: "text is uppercase", run: (v) => /[a-z]/.test(v) && v === v.toUpperCase() },
-  isLower: { in: ["text"], out: "bool", label: "text is lowercase", run: (v) => /[A-Z]/.test(v) && v === v.toLowerCase() },
-  not: { in: ["bool"], out: "bool", label: "negated", run: (v) => !v },
-  add: { in: ["number"], out: "number", label: "increased by {{number}}", param: "number", run: (v, arg) => v + arg.number },
-  subtract: { in: ["number"], out: "number", label: "decreased by {{number}}", param: "number", run: (v, arg) => v - arg.number },
-  multiply: { in: ["number"], out: "number", label: "multiplied by {{number}}", param: "number", run: (v, arg) => v * arg.number },
-  divide: { in: ["number"], out: "number", label: "divided by {{number}}", param: "number", run: (v, arg) => (arg.number === 0 ? undefined : v / arg.number) },
-  mod: { in: ["number"], out: "number", label: "remainder after dividing by {{number}}", param: "number", run: (v, arg) => (arg.number === 0 ? undefined : v % arg.number) },
-  negate: { in: ["number"], out: "number", label: "negated", run: (v) => -v },
-  abs: { in: ["number"], out: "number", label: "absolute value", run: (v) => Math.abs(v) },
-  square: { in: ["number"], out: "number", label: "squared", run: (v) => nthSquare(v) },
-  factorial: { in: ["number"], out: "number", label: "factorial", run: (v) => factorial(v) },
-  fibonacci: { in: ["number"], out: "number", label: "Fibonacci value at that position", run: (v) => fib(v) },
-  triangular: { in: ["number"], out: "number", label: "triangular number at that position", run: (v) => nthTriangular(v) },
-  primeAt: { in: ["number"], out: "number", label: "nth prime", run: (v) => nthPrime(v) },
-  sum: { in: ["list"], out: "number", label: "sum", run: (v) => { const nums = v.map(Number).filter(Number.isFinite); return nums.length ? nums.reduce((a, b) => a + b, 0) : undefined; } },
-  count: { in: ["list"], out: "number", label: "count", run: (v) => v.length },
-  join: { in: ["list"], out: "text", label: "joined", run: (v) => v.join("") || undefined },
+  lower: { in: ["text"], out: "text", label: "lowercases it", run: (v) => v.toLowerCase() },
+  upper: { in: ["text"], out: "text", label: "uppercases it", run: (v) => v.toUpperCase() },
+  collapse: { in: ["text"], out: "text", label: "collapses the spaces", run: (v) => normalizeSpaces(v) },
+  unquote: { in: ["text"], out: "text", label: "trims the quotes", run: (v) => stripEdges(v) || undefined },
+  alnum: { in: ["text"], out: "text", label: "keeps only its letters and digits", run: (v) => alnum(v) || undefined },
+  reverse: { in: ["text"], out: "text", label: "reverses it", run: (v) => [...v].reverse().join("") },
+  sortChars: { in: ["text"], out: "text", label: "sorts its characters", run: (v) => [...v].sort().join("") },
+  firstChar: { in: ["text"], out: "text", label: "takes its first character", run: (v) => v.slice(0, 1) || undefined },
+  lastChar: { in: ["text"], out: "text", label: "takes its last character", run: (v) => v.slice(-1) || undefined },
+  length: { in: ["text", "list"], out: "number", label: "measures its length", run: (v) => (isList(v) ? v.length : [...v].length) },
+  countWords: { in: ["text"], out: "number", label: "counts its words", run: (v) => wordTokens(v).length },
+  countVowels: { in: ["text"], out: "number", label: "counts its vowels", run: (v) => (v.match(/[aeiou]/gi) || []).length },
+  countConsonants: { in: ["text"], out: "number", label: "counts its consonants", run: (v) => (v.match(/[bcdfghjklmnpqrstvwxyz]/gi) || []).length },
+  digitSum: { in: ["text", "number"], out: "number", label: "adds up its digits", run: (v) => digitSum(v) },
+  toNumber: { in: ["text"], out: "number", label: "reads it as a number", run: (v) => (Number.isFinite(Number(v)) ? Number(v) : undefined) },
+  countChar: { in: ["text"], out: "number", label: 'counts the "{{letter}}" characters', param: "letter", run: (v, arg) => (v.toLowerCase().split(arg.letter).length - 1) },
+  charAt: { in: ["text"], out: "text", label: "takes the character at position {{number}}", param: "ordinal-position", run: (v, arg) => v[arg.number - 1] || undefined },
+  equalsReversed: { in: ["text"], out: "bool", label: "checks whether it reads the same way backwards", run: (v) => alnum(v).length > 0 && alnum(v) === [...alnum(v)].reverse().join("") },
+  equalsLiteral: { in: ["text"], out: "bool", label: 'checks whether it equals "{{token}}"', param: "token", run: (v, arg) => alnum(v) === alnum(arg.token) },
+  containsLiteral: { in: ["text"], out: "bool", label: 'checks whether it contains "{{token}}"', param: "token", run: (v, arg) => v.toLowerCase().includes(String(arg.token).toLowerCase()) },
+  startsWith: { in: ["text"], out: "bool", label: 'checks whether it starts with "{{token}}"', param: "token", run: (v, arg) => v.toLowerCase().startsWith(String(arg.token).toLowerCase()) },
+  endsWith: { in: ["text"], out: "bool", label: 'checks whether it ends with "{{token}}"', param: "token", run: (v, arg) => v.toLowerCase().endsWith(String(arg.token).toLowerCase()) },
+  isDigits: { in: ["text"], out: "bool", label: "checks whether it is all digits", run: (v) => /^\d+$/.test(v) },
+  isUpper: { in: ["text"], out: "bool", label: "checks whether it is uppercase", run: (v) => /[a-z]/.test(v) && v === v.toUpperCase() },
+  isLower: { in: ["text"], out: "bool", label: "checks whether it is lowercase", run: (v) => /[A-Z]/.test(v) && v === v.toLowerCase() },
+  not: { in: ["bool"], out: "bool", label: "negates the result", run: (v) => !v },
+  add: { in: ["number"], out: "number", label: "increases it by {{number}}", param: "number", run: (v, arg) => v + arg.number },
+  subtract: { in: ["number"], out: "number", label: "decreases it by {{number}}", param: "number", run: (v, arg) => v - arg.number },
+  multiply: { in: ["number"], out: "number", label: "multiplies it by {{number}}", param: "number", run: (v, arg) => v * arg.number },
+  divide: { in: ["number"], out: "number", label: "divides it by {{number}}", param: "number", run: (v, arg) => (arg.number === 0 ? undefined : v / arg.number) },
+  mod: { in: ["number"], out: "number", label: "takes the remainder after dividing by {{number}}", param: "number", run: (v, arg) => (arg.number === 0 ? undefined : v % arg.number) },
+  negate: { in: ["number"], out: "number", label: "negates it", run: (v) => -v },
+  abs: { in: ["number"], out: "number", label: "takes its absolute value", run: (v) => Math.abs(v) },
+  square: { in: ["number"], out: "number", label: "squares it", run: (v) => nthSquare(v) },
+  factorial: { in: ["number"], out: "number", label: "takes its factorial", run: (v) => factorial(v) },
+  fibonacci: { in: ["number"], out: "number", label: "takes the Fibonacci number at that position", run: (v) => fib(v) },
+  triangular: { in: ["number"], out: "number", label: "takes the triangular number at that position", run: (v) => nthTriangular(v) },
+  primeAt: { in: ["number"], out: "number", label: "takes the nth prime", run: (v) => nthPrime(v) },
+  sum: { in: ["list"], out: "number", label: "adds the values up", run: (v) => { const nums = v.map(Number).filter(Number.isFinite); return nums.length ? nums.reduce((a, b) => a + b, 0) : undefined; } },
+  count: { in: ["list"], out: "number", label: "counts them", run: (v) => v.length },
+  join: { in: ["list"], out: "text", label: "joins them", run: (v) => v.join("") || undefined },
 };
 
 // ---------------------------------------------------------------------------
@@ -426,13 +437,80 @@ function substitute(template, needle, placeholder) {
   return String(template).slice(0, index) + placeholder + String(template).slice(index + String(needle).length);
 }
 
+// Whether a sentence actually reports a value, rather than merely containing its
+// characters inside another word. The reply "The reverse of 'abcd' is 'cba'."
+// does not report the value "d" even though "abcd" contains that letter, and a
+// program whose computed value happened to be a letter of the request's own word
+// used to pass that off as the reply agreeing with it.
+// A program may only state numbers it derived. Every number in an answer has to
+// come from the request it was given, the span it extracted, or the value it
+// computed; a number from nowhere is one recorded reply's incidental content.
+// "Yes, 12 is the 7th number in the Fibonacci series." states a position nothing
+// computed, so it cannot be evidence for a program whose whole result was a
+// yes/no verdict. This is what stops a rule from copying a claim it never
+// established, whatever the task family happens to be.
+function digitRuns(text) {
+  return String(text ?? "").match(/\d+/g) || [];
+}
+
+function derivesEveryNumber(text, value, input, subject) {
+  const known = new Set([...digitRuns(input), ...digitRuns(formatValue(subject))]);
+  const valueText = formatValue(value);
+  // A sentence that reports the computed value is quoting the computation, so
+  // the numbers inside that value count as derived too.
+  if (reportsValue(text, valueText)) for (const run of digitRuns(valueText)) known.add(run);
+  return digitRuns(text).every((run) => known.has(run));
+}
+
+function reportsValue(text, value) {
+  const needle = String(value ?? "").trim().toLowerCase();
+  const needleTokens = needle.match(/[a-z0-9]+/g) || [];
+  if (!needleTokens.length) return false;
+  const textTokens = (String(text ?? "").toLowerCase().match(/[a-z0-9]+/g) || []);
+  if (needleTokens.length > 1) return textTokens.join(" ").includes(needleTokens.join(" "));
+  return textTokens.includes(needleTokens[0]);
+}
+
+function containsValue(text, value) {
+  const haystack = normalizeSpaces(String(text ?? "")).toLowerCase();
+  const needle = normalizeSpaces(String(value ?? "")).toLowerCase();
+  if (!needle) return false;
+  if (haystack.includes(needle)) return true;
+  const packed = alnum(needle);
+  return packed.length > 1 && alnum(haystack).includes(packed);
+}
+
+// A recorded reply sometimes answers about a different word than the request
+// named: "is abdor a palindrome" can come back as a sentence about "abcdeba".
+// The reply is still a usable phrasing sample, because its own echoed span shows
+// where the placeholder belongs. The request's subject is used whenever the
+// reply does mention it.
+function echoedNeedle(answer, subject) {
+  const text = String(answer ?? "");
+  if (containsValue(text, subject)) return subject;
+  const quoted = text.match(/["'`]([^"'`]{1,60})["'`]/);
+  if (quoted && /[a-z0-9]/i.test(quoted[1])) return quoted[1];
+  return null;
+}
+
+// The value a reply reports, located by the reply's own content when it never
+// mentions the computed value. A reply of "5" to "what is 2 plus 2" still shows
+// where the value sits in the sentence, which is what lets the compiler record
+// that the reply miscomputed rather than treat the whole reply as unusable.
+function valueNeedle(answer, value) {
+  const needle = echoedNeedle(answer, value);
+  if (needle !== null) return needle;
+  const numbers = String(answer ?? "").match(/-?\d+(?:\.\d+)?/g);
+  return numbers && numbers.length ? numbers[0] : null;
+}
+
 // Template inference with a support count. Demonstrated answers are noisy, so
 // the winning wording is the one that explains the most demonstrations, not
 // whichever one happened to be first.
-function bestTemplate(needles, answers, placeholder, { requirePlaceholder = true, bonus = () => 0 } = {}) {
+function bestTemplate(needles, answers, placeholder, { requirePlaceholder = true, bonus = () => 0, needleFor = echoedNeedle } = {}) {
   let best = null;
   for (let anchor = 0; anchor < answers.length; anchor++) {
-    const candidate = substitute(answers[anchor], needles[anchor], placeholder);
+    const candidate = substitute(answers[anchor], needleFor(answers[anchor], needles[anchor]), placeholder);
     if (candidate === null) continue;
     if (requirePlaceholder && !candidate.includes(placeholder)) continue;
     const support = answers.filter((answer, i) => candidate.split(placeholder).join(needles[i]) === answer).length;
@@ -449,22 +527,87 @@ function buildTemplate(needles, answers, placeholder) {
 
 // A boolean program often observes only one branch ("is civic a palindrome" ->
 // yes). The opposite wording is derived by a documented transform over the
-// observed template: swap the Yes/No marker and negate the copula.
+// observed template: swap the Yes/No marker and flip the negation, so the
+// branch that was never observed still gets a natural sentence.
 function counterpartTemplate(template) {
-  if (!template.includes("{subject}")) return null;
-  let derived = template;
-  const marker = derived.match(/^(\s*)(Yes|No)\b/);
+  const text = String(template ?? "");
+  if (!text.includes("{subject}")) return null;
+  const marker = text.match(/^(\s*)(Yes|No)\b/);
   if (!marker) return null;
-  const swapped = marker[2] === "Yes" ? "No" : "Yes";
-  derived = derived.replace(/^(\s*)(Yes|No)\b/, `$1${swapped}`);
-  let negated = false;
-  derived = derived.replace(/\b(is|are|was|were|has|have|had|does|do|did|can|could|will|would)\b(?!\s+(?:not|n't)\b)/, (match) => {
-    negated = true;
-    return match === "can" ? "cannot" : match === "could" ? "could not" : `${match} not`;
-  });
-  derived = derived.replace(/\b(is|are|was|were|has|have|had|does|do|did|can|could|will|would)\s+n't\b/, "$1 not");
-  if (!negated && !/\bn(?:o|')?t\b/.test(derived)) return null;
-  return derived;
+  const affirmative = marker[2] === "Yes";
+  const swapped = text.replace(/^(\s*)(Yes|No)\b/, `$1${affirmative ? "No" : "Yes"}`);
+  if (affirmative) {
+    let negated = false;
+    const derived = swapped.replace(/\b(is|are|was|were|has|have|had|does|do|did|can|could|will|would)\b(?!\s+(?:not|n't)\b)/, (match) => {
+      negated = true;
+      return match === "can" ? "cannot" : match === "could" ? "could not" : `${match} not`;
+    });
+    return negated ? derived : null;
+  }
+  // Denial to affirmation: the negation has to come out, otherwise the derived
+  // branch would deny the very property it is supposed to affirm.
+  const derived = swapped.replace(/\s+\bnot\b/, "").replace(/\bn't\b/, "").replace(/\bcannot\b/, "can");
+  return derived === swapped ? null : derived;
+}
+
+// Does a reply assert the property, deny it, or say nothing either way? The
+// wording of a reply is evidence about phrasing, but its verdict has to be read
+// separately, because a small model answers "Yes, hello is a palindrome."
+function assertedPolarity(text) {
+  const lower = normalizeSpaces(text).toLowerCase();
+  if (!lower) return null;
+  const affirms = /^(?:yes|yeah|yep|correct|true|affirmative|it is|indeed)\b/.test(lower);
+  const denies = /^(?:no|nope|nah|false|incorrect|negative)\b/.test(lower)
+    || /\b(?:is|are|was|were|does|do|did|has|have)\s+not\b/.test(lower)
+    || /\b(?:isn't|aren't|wasn't|weren't|doesn't|don't|didn't|hasn't|haven't|can't|cannot|won't)\b/.test(lower);
+  if (affirms && !denies) return true;
+  if (denies && !affirms) return false;
+  return null;
+}
+
+// The value a reply reports, when its wording is known: split the template at
+// the value placeholder, require the reply to carry the same wording around it,
+// and read the span in between. This is how a reply that claims the reverse of
+// "hello" is "hello" is caught claiming a value the computation never produces.
+function reportedValue(template, answer, subjectText) {
+  if (typeof template !== "string" || !template.includes("{value}")) return null;
+  const [head, ...rest] = template.split("{value}");
+  const tail = rest.join("{value}");
+  const fill = (part) => normalizeSpaces(String(part).replace(/\{subject\}/g, subjectText)).toLowerCase();
+  const text = normalizeSpaces(answer).toLowerCase();
+  const prefix = fill(head);
+  const suffix = fill(tail);
+  if (prefix && !text.startsWith(prefix)) return null;
+  if (suffix && !text.endsWith(suffix)) return null;
+  const end = suffix ? text.length - suffix.length : text.length;
+  if (end <= prefix.length) return null;
+  const span = stripEdges(text.slice(prefix.length, end).trim());
+  return span || null;
+}
+
+// Why a recorded reply disagrees with a definitional computation, if it can be
+// shown to be the reply's own error. Every reason is a claim the compiler checks
+// on its own, so a reply is only set aside when there is a concrete reason to
+// distrust it rather than a preference for the program.
+function recordingFault(emitter, expected, subject, value) {
+  const text = normalizeSpaces(expected);
+  const subjectText = formatValue(subject);
+  if (emitter.op === "truth") {
+    const asserted = assertedPolarity(text);
+    if (asserted !== null && asserted !== value) return "the reply's verdict contradicts the computed answer";
+  }
+  // A reply that quotes a different word than the request named is answering
+  // about something else, and the compiler can say so instead of guessing.
+  const quoted = text.match(/["'`]([^"'`]{1,60})["'`]/g) || [];
+  if (quoted.length && !quoted.some((span) => alnum(span) && alnum(span) === alnum(subjectText))) {
+    return "the reply is about a different word than the request named";
+  }
+  const branch = emitter.op === "truth" ? (value ? emitter.arg.true : emitter.arg.false) : emitter.op === "plain" ? "{value}" : emitter.arg?.template;
+  const reported = reportedValue(branch, text, subjectText);
+  if (reported !== null && alnum(reported) !== alnum(formatValue(value)) && !containsValue(reported, formatValue(value))) {
+    return `the reply reports "${reported}" where the computation gives "${formatValue(value)}"`;
+  }
+  return null;
 }
 
 // Residual tokens: the answer with the subject and the computed value removed,
@@ -486,50 +629,146 @@ function residualTokens(text, needles) {
 // is a palindrome." followed by "Madam is a palindrome." is one program with two
 // surface forms, not two tasks. Opposite answers are never variants, so a
 // wrong branch cannot sneak in through this door.
-function phraseVariant(produced, expected, subject, value) {
-  const a = residualTokens(produced, [subject, value]);
-  const b = residualTokens(expected, [subject, value]);
+function phraseVariant(emitter, produced, expected, subject, value) {
+  if (produced === undefined) return false;
+  const valueText = formatValue(value);
+  // Does the wording carry the computed value at all? A program whose sentence
+  // reports a value can only accept a rephrasing that reports this value:
+  // "The reverse of 'defg' is 'hello'." is not another way of saying "The
+  // reverse of 'defg' is 'gfed'.".
+  const template = typeof emitter.arg?.template === "string" ? emitter.arg.template : "";
+  const branches = [emitter.arg?.true, emitter.arg?.false].filter((branch) => typeof branch === "string");
+  const valueSlot = emitterReportsValue(emitter);
+  if (typeof value === "string" && value.trim() && !valueSlot && !reportsValue(expected, value)) return false;
+  // A rephrasing still has to report the value the program computed. When the
+  // recorded reply names it and the produced sentence leaves it out, the wording
+  // has been baked around one demonstrated answer instead of around the
+  // computation: "The reverse of 'defg' is 'dcba'." is not another way of
+  // saying "The reverse of 'defg' is 'gfed'.", whatever else the two sentences
+  // share.
+  if (valueText && reportsValue(expected, valueText) && !reportsValue(produced, valueText)) return false;
+  if (valueSlot && !reportsValue(expected, valueText)) return false;
+  // A boolean reply is a rephrasing when it asserts the same verdict, whatever
+  // words it uses: "Madam is a palindrome." says what "Yes, \"madam\" is a
+  // palindrome." says.
+  if (emitter.op === "truth") {
+    const asserted = assertedPolarity(expected);
+    if (asserted !== null) return asserted === value;
+  }
+  // Otherwise the wording left after the subject and the value are removed has to
+  // be the same wording. A paraphrase may leave wording out, but it may not
+  // introduce content the recorded reply never carried: a sentence that asserts
+  // a value nobody computed, because a demonstrated answer was baked into a
+  // spare placeholder, is a different claim, not another way of wording one.
+  // Affirmation and negation markers count as wording, since "Yes, X holds." and
+  // "X holds." are the same claim.
+  const a = residualTokens(produced, [subject, valueText]);
+  const b = residualTokens(expected, [subject, valueText]);
   if (!a.size || !b.size) return false;
+  for (const token of a) if (!b.has(token) && !WORDING_TOKENS.has(token)) return false;
   let shared = 0;
   for (const token of a) if (b.has(token)) shared += 1;
   return shared / (a.size + b.size - shared) >= 0.6;
 }
 
-// Wrap an emitter with the evidence for it. A program may only be compiled when
-// it contradicts no demonstration: every demonstration is either reproduced
-// exactly or recognised as the same answer in different words.
-function withCoverage(emitter, subjects, values, answers) {
-  const verdicts = values.map((value, i) => {
+// Wrap an emitter with the evidence for it. Every demonstration is either
+// reproduced exactly, recognised as the same answer in different words, or
+// accounted for as a faulty recording. For an operation whose value is fixed by
+// the request itself, a disagreement can be shown to be the recorded reply's own
+// error, so that reply is reported as a fault instead of blocking the
+// computation. Everything else stays a contradiction.
+// Whether an emitter claims to report a computed value, as opposed to choosing
+// wording by outcome the way a boolean branch does.
+function emitterReportsValue(emitter) {
+  if (emitter.op === "plain") return true;
+  const template = typeof emitter.arg?.template === "string" ? emitter.arg.template : "";
+  const branches = [emitter.arg?.true, emitter.arg?.false].filter((branch) => typeof branch === "string");
+  return template.includes("{value}") || branches.some((branch) => branch.includes("{value}"));
+}
+
+function withCoverage(emitter, inputs, subjects, values, answers, { definitional = false } = {}) {
+  const verdicts = [];
+  const faults = [];
+  // A sentence only reproduces a recorded reply when the reply also reports the
+  // value the computation produced. Otherwise a reply that echoed the request's
+  // own word back as its answer could be reproduced perfectly by a template whose
+  // two placeholders were swapped the wrong way round, and the program would then
+  // read backwards on every fresh request.
+  const mustReportValue = definitional && emitterReportsValue(emitter);
+  values.forEach((value, i) => {
     const produced = emitAnswer(emitter, value, subjects[i]);
-    if (produced === answers[i]) return "exact";
-    if (produced !== undefined && phraseVariant(produced, answers[i], formatValue(subjects[i]), formatValue(value))) return "variant";
-    return "contradiction";
+    // A sentence that states a number the program never derived does not
+    // reproduce the computation, however exactly it matches the reply it was
+    // read from. The check comes first so a reply cannot be reproduced by
+    // copying a claim the program cannot make.
+    if (!derivesEveryNumber(produced, value, inputs[i], subjects[i])) {
+      verdicts.push("contradiction");
+      return;
+    }
+    if (produced === answers[i] && (!mustReportValue || reportsValue(answers[i], formatValue(value)))) {
+      verdicts.push("exact");
+      return;
+    }
+    // A specific, checkable reason to distrust the recorded reply is reported as
+    // such before the looser wording comparison, so the artifact says exactly
+    // what was wrong with it rather than filing it as another phrasing.
+    const reason = definitional ? recordingFault(emitter, answers[i], subjects[i], value) : null;
+    if (reason) {
+      verdicts.push("fault");
+      faults.push({ input: inputs[i], output: answers[i], reason });
+      return;
+    }
+    if (phraseVariant(emitter, produced, answers[i], formatValue(subjects[i]), value)) {
+      verdicts.push("variant");
+      return;
+    }
+    verdicts.push("contradiction");
   });
-  const exactCount = verdicts.filter((verdict) => verdict === "exact").length;
+  const count = (kind) => verdicts.filter((verdict) => verdict === kind).length;
+  const exactCount = count("exact");
   return {
     ...emitter,
     verdicts,
+    faults,
     exactCount,
-    variantCount: verdicts.filter((verdict) => verdict === "variant").length,
-    contradictions: verdicts.filter((verdict) => verdict === "contradiction").length,
-    explainedCount: exactCount + verdicts.filter((verdict) => verdict === "variant").length,
+    variantCount: count("variant"),
+    faultCount: count("fault"),
+    contradictions: count("contradiction"),
+    explainedCount: exactCount + count("variant") + count("fault"),
   };
 }
 
-function inferEmitter(subjects, values, answers) {
+// Emitter candidates are all scored against the demonstrations and the best
+// evidence wins, instead of the first shape that happened to produce something.
+// A wording that phrases every recorded reply beats one that only fits the reply
+// it was read from, which is what lets a program answer for all of them.
+function inferEmitter(inputs, subjects, values, answers, definitional = false) {
   const subjectStrings = subjects.map(formatValue);
   const valueStrings = values.map(formatValue);
+  const candidates = [];
+  const consider = (emitter) => {
+    const scored = withCoverage(emitter, inputs, subjects, values, answers, { definitional });
+    if (scored.explainedCount > 0) candidates.push(scored);
+  };
+
   // 1. The answer is exactly the computed value.
-  if (values.every((value, i) => formatValue(value) === answers[i])) return withCoverage({ op: "plain", arg: {} }, subjects, values, answers);
+  if (values.every((value, i) => formatValue(value) === answers[i])) consider({ op: "plain", arg: {} });
 
   // 2. Boolean predicate: different wording per truth value.
   if (values.every(isBool)) {
+    // A reply's own Yes/No marker says which branch its wording belongs to. When
+    // a reply contradicts the computed value, its sentence is still the phrasing
+    // of the branch it claims, so the wording lands where it belongs instead of
+    // teaching the program to answer backwards.
+    const asserted = answers.map((answer) => assertedPolarity(answer));
+    const trustAsserted = asserted.some((polarity, i) => polarity !== null && polarity !== values[i]);
+    const branchOf = (i) => (trustAsserted && asserted[i] !== null ? asserted[i] : values[i]);
     const branches = { true: null, false: null };
     const support = { true: 0, false: 0 };
     const observed = { true: 0, false: 0 };
     let ok = true;
     for (const truth of [true, false]) {
-      const indexes = values.map((value, i) => (value === truth ? i : -1)).filter((i) => i !== -1);
+      const indexes = values.map((value, i) => (branchOf(i) === truth ? i : -1)).filter((i) => i !== -1);
       observed[truth] = indexes.length;
       if (!indexes.length) continue;
       // A literal branch is not a computation. Rule programs must derive their
@@ -537,7 +776,7 @@ function inferEmitter(subjects, values, answers) {
       // would happily memorize one answer per demonstration. Tasks that really
       // do have literal answers compile as a verified lookup instead.
       const found = bestTemplate(indexes.map((i) => subjectStrings[i]), indexes.map((i) => answers[i]), "{subject}", {
-        // Prefer wording that can be negated for the unseen branch: "Yes, X is a
+        // Prefer wording that can be flipped for the unseen branch: "Yes, X is a
         // palindrome." teaches the no-case, "Madam is a palindrome." does not.
         bonus: (template) => (counterpartTemplate(template) ? 4 : 0),
       });
@@ -559,30 +798,71 @@ function inferEmitter(subjects, values, answers) {
         if (branches.false) derived.push("false");
       }
       if (branches.true || branches.false) {
-        return withCoverage({ op: "truth", arg: { true: branches.true, false: branches.false, derived, support, observed } }, subjects, values, answers);
+        consider({ op: "truth", arg: { true: branches.true, false: branches.false, derived, support, observed } });
       }
     }
   }
 
   // 3. The answer wraps the extracted subject.
   const subjectTemplate = bestTemplate(subjectStrings, answers, "{subject}");
-  if (subjectTemplate) return withCoverage({ op: "template", arg: { template: subjectTemplate.template, support: subjectTemplate.support } }, subjects, values, answers);
+  if (subjectTemplate) consider({ op: "template", arg: { template: subjectTemplate.template, support: subjectTemplate.support } });
 
   // 4. The answer wraps the computed value.
-  const valueTemplate = bestTemplate(valueStrings, answers, "{value}");
-  if (valueTemplate) return withCoverage({ op: "template", arg: { template: valueTemplate.template, support: valueTemplate.support } }, subjects, values, answers);
+  const valueTemplate = bestTemplate(valueStrings, answers, "{value}", { needleFor: valueNeedle });
+  if (valueTemplate) consider({ op: "template", arg: { template: valueTemplate.template, support: valueTemplate.support } });
 
-  // 5. The answer contains both: value first, then the subject.
-  for (let anchor = 0; anchor < Math.min(3, answers.length); anchor++) {
-    const withValue = substitute(answers[anchor], valueStrings[anchor], "{value}");
-    if (withValue === null) continue;
-    const withBoth = substitute(withValue, subjectStrings[anchor], "{subject}");
-    if (withBoth === null) continue;
-    const fits = answers.every((answer, i) => withBoth.split("{subject}").join(subjectStrings[i]).split("{value}").join(valueStrings[i]) === answer);
-    if (fits) return withCoverage({ op: "template", arg: { template: withBoth } }, subjects, values, answers);
+  // 5. The answer carries both the subject and the value, in either order. Each
+  // reply is a candidate skeleton, not only the ones that already fit every
+  // other reply.
+  for (let anchor = 0; anchor < Math.min(4, answers.length); anchor++) {
+    const answer = answers[anchor];
+    const subject = subjectStrings[anchor];
+    // The value can sit anywhere in the sentence, and the reply that names the
+    // subject usually names the value somewhere else in the same reply. Try the
+    // value position, the quoted spans and the subject so both placeholders can
+    // be found in one reply: "The reverse of 'abcd' is 'cba'." teaches
+    // "The reverse of '{subject}' is '{value}'.".
+    // The inner text of a quoted span, not the quotes themselves: replacing the
+    // whole quoted span would take its quotation marks with it, and the wording
+    // of the reply quotes that span.
+    const quoted = [...String(answer).matchAll(/["'`]([^"'`]{1,60})["'`]/g)].map((match) => match[1]);
+    // The request's own word goes into the {subject} slot first. A reply that
+    // echoed that word as its answer ("The reverse of 'hello' is 'hello'.") would
+    // otherwise build the template with the two placeholders swapped, because the
+    // first substitution would claim the subject's occurrence for {value}.
+    const subjectFirst = substitute(answer, subject, "{subject}");
+    if (subjectFirst !== null && subjectFirst.includes("{subject}")) {
+      for (const needle of [...new Set([valueNeedle(answer, valueStrings[anchor]), ...quoted, valueStrings[anchor]].filter(Boolean))]) {
+        const withValue = substitute(subjectFirst, needle, "{value}");
+        if (withValue === null || !withValue.includes("{value}")) continue;
+        consider({ op: "template", arg: { template: withValue } });
+      }
+    }
+    const needles = [...new Set([valueNeedle(answer, valueStrings[anchor]), ...quoted, subject].filter(Boolean))];
+    for (const needle of needles) {
+      const withValue = substitute(answer, needle, "{value}");
+      if (withValue === null || !withValue.includes("{value}")) continue;
+      if (!containsValue(withValue, subject)) continue;
+      const withBoth = substitute(withValue, subject, "{subject}");
+      if (withBoth === null || !withBoth.includes("{subject}")) continue;
+      consider({ op: "template", arg: { template: withBoth } });
+    }
   }
 
-  return null;
+  if (!candidates.length) return null;
+  // A branch-aware boolean program is preferred when it is as well supported as
+  // a single-sentence template, because it can answer both outcomes.
+  const kindRank = (emitter) => (emitter.op === "truth" ? 2 : emitter.op === "plain" ? 1 : 0);
+  // Coverage first, then the kind of sentence, then simplicity. Exact agreement
+  // is not compared here on its own: a template can agree with every reply
+  // verbatim while actually being a memorised sentence, so agreement is judged
+  // through the verdicts (a reply only counts as reproduced when the wording
+  // says what the computation says) rather than as a separate score.
+  candidates.sort((a, b) => a.contradictions - b.contradictions
+    || b.explainedCount - a.explainedCount
+    || kindRank(b) - kindRank(a)
+    || costOf({ steps: [], emit: b }) - costOf({ steps: [], emit: a }));
+  return candidates[0];
 }
 
 function emitAnswer(emitter, value, subject) {
@@ -766,9 +1046,30 @@ const AFFINITY_OPERATORS = {
   "calculate-expression": { readers: ["expression"] },
   "reverse-text": { steps: ["reverse"] },
   "lookup-sequence-element": { steps: ["fibonacci", "primeAt", "triangular", "square", "factorial"], readers: ["ordinal"] },
+  "count-letters": { steps: ["length", "count"] },
+  "count-vowels": { steps: ["countVowels"] },
+  "count-consonants": { steps: ["countConsonants"] },
+  "count-words": { steps: ["countWords"] },
   classify: { steps: ["equalsReversed", "containsLiteral", "startsWith", "endsWith", "isDigits", "isUpper", "isLower", "equalsLiteral"] },
   "count-items": { steps: ["length", "count", "countWords", "countVowels", "countChar", "digitSum"] },
 };
+
+// Operations whose answer is fixed by the request itself: reversing a string,
+// testing whether it reads the same both ways, evaluating a written expression,
+// counting the letters of a named span. For these the computation is the
+// authority, so a recorded reply that disagrees is a model error rather than a
+// second opinion about what the task is. Operations missing from this set are
+// still steerable by their profile (classify and sequence lookups) but need
+// their demonstrations to agree before a rule may be compiled from them.
+const DEFINITIONAL_OPERATIONS = new Set([
+  "check-palindrome",
+  "reverse-text",
+  "calculate-expression",
+  "count-letters",
+  "count-vowels",
+  "count-consonants",
+  "count-words",
+]);
 
 function affinityRank(program, profile) {
   const hint = AFFINITY_OPERATORS[profile.operation];
@@ -776,6 +1077,86 @@ function affinityRank(program, profile) {
   if (hint.readers?.includes(program.read.op)) return 1;
   if (hint.steps?.some((step) => program.steps.some((candidate) => candidate.op === step))) return 1;
   return 0;
+}
+
+// Whether a candidate program actually performs the computation its request
+// names, rather than merely reading the right span. "Reversing" a word has to
+// reverse something: without this, a chain of incidental steps that happens to
+// reproduce a recorded reply can be filed as the operation itself, which is how
+// one demonstration used to produce an absurd but "clean" program.
+function performsOperation(shape, profile) {
+  const hint = AFFINITY_OPERATORS[profile.operation];
+  if (!hint) return false;
+  if (hint.readers?.includes(shape.read.op)) return true;
+  return Boolean(hint.steps?.some((step) => shape.steps.some((candidate) => candidate.op === step)));
+}
+
+// Readers that take a span of the request as the subject. A definitional
+// computation consumes a span (the word, the quoted string, the expression), not
+// the whole sentence, so these are the readings it may be compiled from.
+const SUBJECT_READERS = new Set([
+  "firstWord", "lastWord", "quoted", "numberLast", "numberFirst", "expression", "ordinal",
+  "wordBefore", "wordAfter", "restBefore", "restAfter",
+]);
+
+// How well a reader matches what the replies are actually about. `variety` counts
+// how many different subjects the demonstrations produce: a reader that keeps
+// returning the same word on every request is reading the request's own wording
+// rather than the value the replies report. `agreement` counts how often a reply
+// echoes the subject, using the span the reply itself quotes when it quotes one.
+function readerEvidence(subjects, answers) {
+  const texts = subjects.map(formatValue);
+  const variety = new Set(texts.map((text) => text.toLowerCase())).size;
+  // A subject made only of function words is a fragment of the request's wording
+  // ("is hello a palindrome" read as "everything before hello" gives "is"), not
+  // the value the reply reports about.
+  const contentful = texts.every((text) => {
+    const tokens = wordTokens(text);
+    return !tokens.length || tokens.some((token) => !FILLER.has(token.toLowerCase()));
+  });
+  let agreement = 0;
+  for (let i = 0; i < texts.length; i++) {
+    const subject = texts[i];
+    const quoted = String(answers[i]).match(/["'`]([^"'`]{1,60})["'`]/g);
+    if (quoted) {
+      if (quoted.some((span) => alnum(span) && alnum(span) === alnum(subject))) agreement += 1;
+      continue;
+    }
+    if (containsValue(answers[i], subject)) agreement += 1;
+  }
+  return { variety, agreement, contentful, subjectLength: texts.join(" ").length };
+}
+
+// Preference between two candidate programs. Confidence first: a candidate that
+// leaves demonstrations unaccounted for never wins. Then the operation the
+// requests name, because a definitional operation is the task itself. Then how
+// well the reader reads what the replies talk about, then how much of the
+// evidence reproduces verbatim, then how many recorded replies had to be
+// explained away, then simplicity.
+function compareSolutions(a, b) {
+  if (a.contradictions !== b.contradictions) return a.contradictions - b.contradictions;
+  if (a.definitional !== b.definitional) return Number(b.definitional) - Number(a.definitional);
+  if (a.definitional) {
+    if (a.contentful !== b.contentful) return Number(b.contentful) - Number(a.contentful);
+    if (a.variety !== b.variety) return b.variety - a.variety;
+    if (a.agreement !== b.agreement) return b.agreement - a.agreement;
+    // The reply reports the value the computation consumes, so the shortest
+    // reading that still reads every request is the one it is about: a longer
+    // span would carry request wording inside the value.
+    if (a.subjectLength !== b.subjectLength) return a.subjectLength - b.subjectLength;
+    // Simplicity decides between two readings of the same operation: an extra
+    // step has to earn its place, because a step that flips the computed value
+    // is usually what makes a recorded error look reproducible. Exact agreement
+    // is deliberately not compared before this: a program can agree verbatim by
+    // memorising one demonstrated sentence, which is exactly what the simpler
+    // reading is allowed to beat.
+    if (a.cost !== b.cost) return a.cost - b.cost;
+  }
+  if (a.exactCount !== b.exactCount) return b.exactCount - a.exactCount;
+  if (a.variantCount !== b.variantCount) return b.variantCount - a.variantCount;
+  if (a.faultCount !== b.faultCount) return a.faultCount - b.faultCount;
+  if (a.affinity !== b.affinity) return b.affinity - a.affinity;
+  return a.cost - b.cost;
 }
 
 function synthesizeRule(pairs, profile, budget) {
@@ -787,21 +1168,31 @@ function synthesizeRule(pairs, profile, budget) {
     const reader = READERS[root.op];
     const subjects = pairs.map((pair) => reader.run(pair.input, root.arg || {}));
     if (subjects.some((value) => value === undefined)) continue;
+    const inputs = pairs.map((pair) => pair.input);
     const queue = [{ steps: [], values: subjects, subjects }];
     let cursor = 0;
     while (cursor < queue.length && explored < budget) {
       const node = queue[cursor++];
       explored += 1;
-      const emit = inferEmitter(node.subjects, node.values, answers);
+      const shape = { read: root, steps: node.steps };
+      const affinity = affinityRank(shape, profile);
+      const definitional = affinity > 0 && DEFINITIONAL_OPERATIONS.has(profile.operation);
+      const emit = inferEmitter(inputs, node.subjects, node.values, answers, definitional);
       if (emit) {
         solutions.push({
           read: root,
           steps: node.steps,
           emit,
+          affinity,
+          definitional,
+          performs: performsOperation(shape, profile),
+          ...readerEvidence(node.subjects, answers),
           cost: costOf({ steps: node.steps, emit }),
           exactCount: emit.exactCount,
           variantCount: emit.variantCount,
+          faultCount: emit.faultCount,
           contradictions: emit.contradictions,
+          explained: emit.explainedCount,
           fullyExplains: emit.exactCount === answers.length,
         });
       }
@@ -825,15 +1216,7 @@ function synthesizeRule(pairs, profile, budget) {
     }
   }
   if (!solutions.length) return { solutions: [], explored };
-  // Two ordering keys. First the operation the request profile names: when the
-  // demonstrations all show one outcome (every palindrome tried was a real
-  // palindrome) both a checker and a yes-sayer reproduce them, and the profile
-  // says which recurring task the user is actually repeating. Then simplicity.
-  // Reproduction is never traded away: only exact programs are considered.
-  for (const solution of solutions) solution.affinity = affinityRank(solution, profile);
-  // Preference order: contradicts nothing, then explains every demonstration,
-  // then matches the profiled operation, then simplest.
-  solutions.sort((a, b) => Number(b.contradictions === 0) - Number(a.contradictions === 0) || Number(b.fullyExplains) - Number(a.fullyExplains) || b.affinity - a.affinity || a.cost - b.cost);
+  solutions.sort(compareSolutions);
   return { solutions, explored };
 }
 
@@ -863,25 +1246,65 @@ function compileProgram(pairs, profile) {
   const cleaned = pairs.map((pair) => ({ input: normalizeSpaces(pair.input), output: normalizeSpaces(pair.output) })).filter((pair) => pair.input && pair.output);
   if (!cleaned.length) return { program: null, reason: "no verified demonstrations were available to compile from" };
   const search = synthesizeRule(cleaned, profile, SEARCH_BUDGET);
-  // A rule may be compiled when it contradicts no demonstration, or when it is
-  // backed by a strict majority of them and disagrees only with outliers. The
-  // second case matters because recorded answers can themselves be wrong: two
-  // replies can claim opposite things about a property that is decidable, and
-  // only one of them can stand. Whatever is set aside is reported with the tool
-  // rather than silently dropped.
+  // A rule may be compiled in three ways, in order of how much it takes on
+  // trust.
+  //
+  //   clean       : reproduces every demonstration and sets none aside.
+  //   authoritative: the requests name an operation with one definition, the
+  //                 candidate computes exactly that, and every disagreeing reply
+  //                 is a recorded error the compiler can point at (a verdict
+  //                 that contradicts the computed answer, a reply about a
+  //                 different word, or a value the computation never produces).
+  //                 This is the difference between compiling the task the user
+  //                 is repeating and compiling whatever a small model happened
+  //                 to say, which is how a palindrome family used to end up as a
+  //                 lookup that answered nothing.
+  //   majority    : a strict majority of demonstrations support it and only
+  //                 outliers disagree.
+  //
+  // Everything set aside is reported with the tool, never silently dropped.
   const seed = seedFrom(cleaned.map((pair) => pair.input).join("|"));
-  const clean = search.solutions.find((solution) => solution.contradictions === 0 && solution.exactCount >= 1 && respondsToInput(solution, seed));
-  const rule = clean || search.solutions.find((solution) => solution.exactCount >= 1 && solution.exactCount + solution.variantCount > solution.contradictions && respondsToInput(solution, seed));
+  // The authority of an operation only carries a cluster whose requests all name
+  // that same operation, so a mixed cluster cannot be resolved by computing one
+  // of the two tasks it contains.
+  const oneOperation = cleaned.every((pair) => profileTask(pair.input).operation === profile.operation);
+  // One demonstration does not identify a program: the same single reply can be
+  // reproduced by an absurd chain of steps that happens to end in the right
+  // characters. Two demonstrations that name different subjects are the minimum
+  // evidence that identifies a rule, which is the same line leave-one-out
+  // reports. Below it the verified lookup is the honest artifact.
+  const minimumEvidence = (solution) => solution.variety >= 2;
+  // When the request names an operation with one definition, the compiled rule
+  // has to be that operation. This is the authority rule: the computation is the
+  // task, so a rule that only reads the right span is not it. Families without a
+  // definition keep their own evidence standard below.
+  const definitionalCluster = (solution) => !DEFINITIONAL_OPERATIONS.has(profile.operation) || solution.performs;
+  const isClean = (solution) => solution.contradictions === 0 && solution.faultCount === 0 && solution.exactCount >= 1;
+  const isAuthoritative = (solution) => oneOperation
+    && solution.definitional
+    && solution.contentful
+    && SUBJECT_READERS.has(solution.read.op)
+    && solution.contradictions === 0
+    && solution.explained === cleaned.length;
+  const isMajority = (solution) => solution.faultCount === 0 && solution.contradictions > 0 && solution.exactCount >= 1 && solution.exactCount + solution.variantCount > solution.contradictions;
+  const acceptable = (solution) => minimumEvidence(solution)
+    && definitionalCluster(solution)
+    && (isClean(solution) || isAuthoritative(solution) || isMajority(solution));
+  // The ranked list decides, so the most confident acceptable program wins even
+  // when a lower ranked one would satisfy a stricter tier.
+  const rule = search.solutions.find((solution) => acceptable(solution) && respondsToInput(solution, seed));
   let program = null;
   if (rule) {
     program = { version: 1, family: "rule", read: rule.read, steps: rule.steps, emit: rule.emit };
-    const outliers = (rule.emit.verdicts || []).map((verdict, i) => (verdict === "contradiction" ? cleaned[i] : null)).filter(Boolean);
+    const outliers = (rule.emit.faults || []).concat((rule.emit.verdicts || []).map((verdict, i) => (verdict === "contradiction" ? cleaned[i] : null)).filter(Boolean));
     program.coverage = {
       demonstrations: cleaned.length,
       exact: rule.exactCount,
       variants: rule.variantCount,
-      explained: rule.exactCount + rule.variantCount,
+      faults: rule.faultCount,
+      explained: rule.explained,
       contradictions: rule.contradictions,
+      authority: rule.definitional === true && rule.faultCount > 0,
       outliers: outliers.slice(0, 4),
     };
   } else {
@@ -893,7 +1316,20 @@ function compileProgram(pairs, profile) {
       // part of the story: two replies claimed opposite things.
       const closest = search.solutions[0];
       const disagreements = (closest?.emit?.verdicts || []).map((verdict, i) => (verdict === "contradiction" ? cleaned[i] : null)).filter(Boolean).slice(0, 3);
-      program.coverage = { demonstrations: cleaned.length, exact: cleaned.length, variants: 0, explained: cleaned.length, contradictions: 0, disagreements, closestPath: closest ? programPath({ read: closest.read, steps: closest.steps, emit: closest.emit }) : null };
+      program.coverage = {
+        demonstrations: cleaned.length,
+        exact: cleaned.length,
+        variants: 0,
+        explained: cleaned.length,
+        contradictions: 0,
+        disagreements,
+        closestPath: closest ? programPath({ read: closest.read, steps: closest.steps, emit: closest.emit }) : null,
+        // A family that names a decidable computation reached the lookup fallback
+        // only because one request was ever repeated: one demonstration cannot
+        // identify a program, so the recorded reply is answered and nothing more
+        // is claimed about it.
+        singleDemonstration: cleaned.length < 2 && DEFINITIONAL_OPERATIONS.has(profile.operation),
+      };
     }
   }
   if (!program) {
@@ -916,6 +1352,9 @@ function compileProgram(pairs, profile) {
 // the same for every in-domain request it can read is a recited line, not a
 // computation, no matter how well it fits the demonstrations.
 function respondsToInput(solution, seed = 7) {
+  // A program has to answer more than one way across its own in-domain requests.
+  // The check is deliberately generous: the ranking already prefers the simplest
+  // computation, so this only rules out a program that recites a single line.
   const answers = new Set();
   let executed = 0;
   for (const input of sampleProgramInputs(solution, 8, seed)) {
@@ -956,47 +1395,82 @@ function readerLabel(read) {
   return spec.label.replace("{{keyword}}", (read.arg || {}).keyword ?? "");
 }
 
+// A monotonic clock with sub-millisecond resolution, so a program that executes
+// locally reports how long it really took instead of rounding every run to 0ms.
+// The wall clock is the fallback where the performance API is unavailable.
+function now() {
+  return typeof performance !== "undefined" && typeof performance.now === "function" ? performance.now() : Date.now();
+}
+
+function elapsedFrom(startedAt) {
+  return Math.round((now() - startedAt) * 1000) / 1000;
+}
+
 function executeProgram(program, input) {
-  const startedAt = Date.now();
+  const startedAt = now();
   const trace = [];
   const reader = READERS[program.read.op];
-  if (!reader) return { ok: false, reason: "unknown reader", ms: Date.now() - startedAt, trace };
+  if (!reader) return { ok: false, reason: "unknown reader", ms: elapsedFrom(startedAt), trace };
   const subject = reader.run(input, program.read.arg || {});
   if (subject === undefined) {
-    return { ok: false, reason: "the request does not match this program's input pattern", ms: Date.now() - startedAt, trace: [`read: ${readerLabel(program.read)} -> no match`] };
+    return { ok: false, reason: "the request does not match this program's input pattern", ms: elapsedFrom(startedAt), trace: [`read: ${readerLabel(program.read)} -> no match`] };
   }
   trace.push(`read: ${readerLabel(program.read)} -> ${formatValue(subject)}`);
   let value = subject;
   for (const step of program.steps) {
     const spec = STEPS[step.op];
-    if (!spec) return { ok: false, reason: `unknown step ${step.op}`, ms: Date.now() - startedAt, trace };
+    if (!spec) return { ok: false, reason: `unknown step ${step.op}`, ms: elapsedFrom(startedAt), trace };
     const next = spec.run(value, step.arg || {});
     if (next === undefined) {
-      return { ok: false, reason: `step failed: ${stepLabel(step)}`, ms: Date.now() - startedAt, trace };
+      return { ok: false, reason: `step failed: ${stepLabel(step)}`, ms: elapsedFrom(startedAt), trace };
     }
     value = next;
     trace.push(`step: ${stepLabel(step)} -> ${formatValue(value)}`);
   }
   const text = emitAnswer(program.emit, value, subject);
   if (text === undefined) {
-    return { ok: false, reason: program.emit.op === "table" ? "this program has no verified answer for that input" : "no answer branch matched for that input", ms: Date.now() - startedAt, trace };
+    return { ok: false, reason: program.emit.op === "table" ? "this program has no verified answer for that input" : "no answer branch matched for that input", ms: elapsedFrom(startedAt), trace };
   }
   trace.push(`emit: ${emitterLabel(program.emit)}`);
-  return { ok: true, text: normalizeSpaces(text), ms: Date.now() - startedAt, trace, path: programPath(program) };
+  // The subject and the computed value come back with the answer so the same
+  // evidence rule that chose the wording can be re-checked against a program
+  // that was saved earlier (see misdeclaredNumbers).
+  return { ok: true, text: normalizeSpaces(text), ms: elapsedFrom(startedAt), trace, path: programPath(program), subject, value };
 }
 
+// Re-checks a stored program against its own recorded demonstrations: every
+// number it answers with has to be derived from that request or from the value
+// the program computed. A rule saved by an earlier build that only reproduced a
+// reply by copying a number out of it fails here, which is what stops a stale
+// program from answering fresh requests with a fact it never established. A
+// verified lookup is exempt on purpose: repeating its recorded answers and
+// declining anything else is exactly what it is for.
+function misdeclaredNumbers(program, demonstrations) {
+  if (!program || program.emit?.op === "table") return [];
+  return demonstrations
+    .filter((pair) => {
+      const run = executeProgram(program, pair.input);
+      return run.ok && !derivesEveryNumber(run.text, run.value, pair.input, run.subject);
+    })
+    .map((pair) => pair.input);
+}
+
+// How the program answers, in a phrase that reads correctly after the steps and
+// after an arrow in the compiled path. The recorded sentences themselves are not
+// pasted in here: they are shown with the demonstrations they came from, where
+// they can be read, instead of inflating one line of registry copy.
 function emitterLabel(emit) {
   switch (emit.op) {
     case "plain":
-      return "return the computed value";
+      return "returns the computed value";
     case "literal":
-      return "return the verified literal answer";
+      return "returns the recorded answer";
     case "template":
-      return `fill template ${JSON.stringify(emit.arg.template)}`;
+      return "fills in the recorded wording";
     case "truth":
-      return `select wording for true/false (${JSON.stringify(emit.arg.true)} / ${JSON.stringify(emit.arg.false)})`;
+      return "chooses between the recorded wordings";
     case "table":
-      return `look up the verified answer (${Object.keys(emit.arg.map).length} entries)`;
+      return `looks the answer up among the ${Object.keys(emit.arg.map).length} recorded answers`;
     default:
       return emit.op;
   }
@@ -1023,16 +1497,34 @@ function gradeProgram(program, pairs) {
 // held-out demonstration. This measures generalization, not memorization, and
 // is why a table program reports zero.
 function leaveOneOut(pairs, profile) {
-  if (pairs.length < 2) return { folds: 0, passed: 0 };
+  // A fold trains on every demonstration except one. With two demonstrations that
+  // leaves a single training example, and many programs fit one example, so the
+  // measurement would describe the sample size rather than the program. Say so
+  // instead of publishing a number that means nothing.
+  if (pairs.length < 3) {
+    return {
+      folds: pairs.length,
+      passed: 0,
+      computed: 0,
+      measured: 0,
+      note: "leave-one-out needs at least three demonstrations, because a single training demonstration does not identify a task",
+    };
+  }
   let passed = 0;
+  let computed = 0;
   for (let i = 0; i < pairs.length; i++) {
     const training = pairs.filter((_, index) => index !== i);
     const compiled = compileProgram(training, profile);
     if (!compiled.program) continue;
     const run = executeProgram(compiled.program, pairs[i].input);
-    if (run.ok && normalizeSpaces(run.text) === normalizeSpaces(pairs[i].output)) passed += 1;
+    if (!run.ok) continue;
+    // `computed` counts the folds where a program compiled from the other
+    // demonstrations answered this one at all. `passed` additionally requires the
+    // recorded wording, which a model error can never satisfy.
+    computed += 1;
+    if (normalizeSpaces(run.text) === normalizeSpaces(pairs[i].output)) passed += 1;
   }
-  return { folds: pairs.length, passed };
+  return { folds: pairs.length, passed, computed, measured: pairs.length };
 }
 
 // Inputs in the program's own language, built by reusing the request template
@@ -1219,12 +1711,22 @@ function sanitizeName(name) {
   return normalized || "recurring-task-program";
 }
 
+// The registry line for a program: what it reads, what it does with it, and how
+// it answers. It is assembled from the same operation descriptions the runtime
+// traces, so it describes the program that is actually stored rather than a
+// summary written somewhere else that could drift away from it. It stays short
+// because a long chain of steps is summarised by how many of them there are.
+// Everything here is derived from the program, so it works the same way for any
+// task the compiler can compile.
+const MAX_LISTED_STEPS = 3;
+
 function specificationFor(program) {
-  const read = readerLabel(program.read);
   const steps = program.steps.map(stepLabel);
-  const emit = emitterLabel(program.emit);
-  const chain = steps.length ? steps.join(", then ") : "no further transformation";
-  return `Reads ${read}, applies ${chain}, and ${emit}.`;
+  const listed = steps.slice(0, MAX_LISTED_STEPS);
+  const remaining = steps.length - listed.length;
+  if (remaining > 0) listed.push(`applies ${remaining} more step${remaining === 1 ? "" : "s"}`);
+  const chain = [...listed, emitterLabel(program.emit)].join(", then ");
+  return `Reads ${readerLabel(program.read)}, then ${chain}.`;
 }
 
 function programListing(program) {
@@ -1274,6 +1776,7 @@ export {
   specificationFor,
   programListing,
   programSummary,
+  misdeclaredNumbers,
   uncoveredBranches,
   derivedBranches,
   programPath,

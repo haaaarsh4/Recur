@@ -37,7 +37,45 @@ test("compiles a palindrome checker and answers fresh words", () => {
   // derived by the documented counterpart transform over the observed template.
   assert.deepEqual(answers(program, ["is hello a palindrome"]), ['No, "hello" is not a palindrome.']);
   assert.equal(nameProgram(program, profileTask("is civic a palindrome")), "palindrome-checker");
-  assert.match(specificationFor(program), /palindrome/i);
+  assert.match(specificationFor(program), /reads the same way backwards/);
+});
+
+test("describes a program in one short sentence about what it runs", () => {
+  const program = compile([
+    { input: "is civic a palindrome", output: 'Yes, "civic" is a palindrome.' },
+    { input: "is madam a palindrome", output: 'Yes, "madam" is a palindrome.' },
+  ]);
+  const specification = specificationFor(program);
+  // Short enough to scan in a registry row, and it reads as a sentence rather
+  // than as a dump of the program's operations.
+  assert.ok(specification.length <= 140, specification);
+  assert.match(specification, /^Reads .+, then .+\.$/);
+  assert.ok(!/[{}]/.test(specification), specification);
+  assert.ok(!/select wording|true\/false|apply the contract/.test(specification), specification);
+  assert.ok(!/\.\./.test(specification), specification);
+});
+
+test("never compiles wording that states a number the computation did not produce", () => {
+  // A small model answered these three requests with a verdict about the
+  // position "the 7th number", which nothing computes: the requests ask whether
+  // a number is in the series and what the tenth element is. Whatever the
+  // compiler does with evidence like that, it may not end up asserting a
+  // position of its own.
+  const pairs = [
+    { input: "is 12 in the fibonacci series", output: "Yes, 12 is the 7th number in the Fibonacci series." },
+    { input: "what is the 10th element in the Fibonacci series", output: "The 10th element in the Fibonacci series is 55." },
+    { input: "is 10 in the fibonacci series", output: "Yes, 10 is the 7th number in the Fibonacci sequence." },
+  ];
+  const result = compileProgram(pairs, profileTask(pairs[0].input));
+  assert.ok(result.program, result.reason);
+  for (const probe of ["is 7 in the fibonacci series", "is 55 in the fibonacci series", "what is the 12th element in the Fibonacci series"]) {
+    const run = executeProgram(result.program, probe);
+    if (!run.ok) continue; // declining is always allowed
+    assert.ok(!/\b7th\b/.test(run.text), `fabricated a position for ${probe}: ${run.text}`);
+  }
+  // The wording it can keep is the wording the request itself supplies.
+  const fresh = executeProgram(result.program, "is 3 in the fibonacci series");
+  assert.ok(!fresh.ok, `a request outside the recorded answers should decline, got ${fresh.text}`);
 });
 
 test("learns both boolean branches when both were observed", () => {
@@ -81,22 +119,61 @@ test("normalizes inconsistent wording from the answers it was given", () => {
   ]);
 });
 
-test("a contradictory demonstration stops a program from compiling", () => {
+test("a reply that contradicts a decidable computation is recorded, not obeyed", () => {
+  // madam reads the same both ways, so the second reply is simply wrong. The
+  // property is decidable, so the computation stands, the reply is reported as a
+  // recorded model error, and the program answers the request correctly instead
+  // of the family collapsing into a lookup that can answer nothing.
   const pairs = [
     { input: "is civic a palindrome", output: 'Yes, "civic" is a palindrome.' },
     { input: "is madam a palindrome", output: 'No, "madam" is not a palindrome.' },
   ];
+  const program = compile(pairs);
+  assert.equal(program.family, "rule");
+  assert.equal(program.coverage.authority, true);
+  assert.equal(program.coverage.faults, 1);
+  assert.match(program.coverage.outliers[0].reason, /verdict contradicts/);
+  assert.deepEqual(answers(program, ["is madam a palindrome", "is zebra a palindrome"]), [
+    'Yes, "madam" is a palindrome.',
+    'No, "zebra" is not a palindrome.',
+  ]);
+});
+
+test("conflicting replies about a task with no rule still do not compile", () => {
+  const pairs = [
+    { input: "what is the capital of france", output: "Paris" },
+    { input: "what is the capital of france", output: "Lyon" },
+  ];
   const result = compileProgram(pairs, profileTask(pairs[0].input));
-  // The two answers disagree about the same computation, so nothing generalizes
-  // and the task is compiled as a verified lookup instead.
-  assert.equal(result.program.family, "table");
-  assert.deepEqual(answers(result.program, ["is civic a palindrome"]), ['Yes, "civic" is a palindrome.']);
+  assert.equal(result.program, null);
+  assert.match(result.reason, /do not share one deterministic computation/);
+});
+
+test("compiles a correct reverser even when every recorded reply got it wrong", () => {
+  // A small model reverses "abcd" to "cba", "defg" to "gfde" and echoes
+  // "hello" back unchanged. Reversal is decidable, so the program computes the
+  // answer and each reply is recorded with the value it got wrong.
+  const pairs = [
+    { input: "whats the reverse of 'abcd'", output: "The reverse of 'abcd' is 'cba'." },
+    { input: "whats the reverse of 'defg'", output: "The reverse of 'defg' is 'gfde'." },
+    { input: "whats the reverse of 'hello'", output: "The reverse of 'hello' is 'hello'." },
+    { input: "whats the reverse of 'king'", output: "The reverse of 'king' is 'king'." },
+  ];
+  const program = compile(pairs);
+  assert.equal(program.family, "rule");
+  assert.equal(program.coverage.faults, 4);
+  assert.match(program.coverage.outliers[0].reason, /computation gives/);
+  assert.deepEqual(answers(program, ["whats the reverse of 'zebra'", "whats the reverse of 'civic'"]), [
+    "The reverse of 'zebra' is 'arbez'.",
+    "The reverse of 'civic' is 'civic'.",
+  ]);
 });
 
 test("keeps the computation and reports the answer that disagreed with it", () => {
   // A small model will happily claim that racecar is not a palindrome. The
-  // property is decidable, so the majority stands, the compiler computes rather
-  // than recalls, and the outlier is recorded on the tool instead of vanishing.
+  // property is decidable, so the computation stands, the compiler computes
+  // rather than recalls, and the reply is recorded on the tool instead of
+  // vanishing.
   const pairs = [
     { input: "is civic a palindrome", output: 'Yes, "civic" is a palindrome.' },
     { input: "is madam a palindrome", output: 'Yes, "madam" is a palindrome.' },
@@ -104,8 +181,9 @@ test("keeps the computation and reports the answer that disagreed with it", () =
   ];
   const program = compile(pairs);
   assert.equal(program.family, "rule");
-  assert.equal(program.coverage.contradictions, 1);
-  assert.deepEqual(program.coverage.outliers, [{ input: "is racecar a palindrome", output: 'No, "racecar" is not a palindrome.' }]);
+  assert.equal(program.coverage.contradictions, 0);
+  assert.equal(program.coverage.faults, 1);
+  assert.deepEqual(program.coverage.outliers, [{ input: "is racecar a palindrome", output: 'No, "racecar" is not a palindrome.', reason: "the reply's verdict contradicts the computed answer" }]);
   assert.deepEqual(answers(program, ["is racecar a palindrome", "is kayak a palindrome", "is zebra a palindrome"]), [
     'Yes, "racecar" is a palindrome.',
     'Yes, "kayak" is a palindrome.',

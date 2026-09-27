@@ -1,7 +1,8 @@
 // Recur's acceptance head: a tiny neural network trained locally at compile
 // time. It answers one question about a new request: is this inside the input
 // distribution this program was compiled from? The symbolic program does the
-// work; the head decides when the program may run on its own.
+// work; the head decides whether a match is close enough to be worth offering
+// the user, so a program is never pushed at a request it only vaguely fits.
 //
 // Everything here is deterministic, dependency free, and runs in microseconds:
 // no model calls, no network, no floating point surprises across runs.
