@@ -1,4 +1,4 @@
-# Recur
+# Recur 
 
 **A chat workspace that compiles what you repeat into programs you own.**
 
