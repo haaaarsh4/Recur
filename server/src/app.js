@@ -6,6 +6,7 @@ import express from "express";
 import cors from "cors";
 import cookieParser from "cookie-parser";
 import { init } from "./db.js";
+import { CLIENT_ORIGIN } from "./oauth.js";
 import authRoutes from "./routes/auth.js";
 import chatRoutes from "./routes/chats.js";
 import toolRoutes from "./routes/tools.js";
@@ -13,7 +14,9 @@ import statsRoutes from "./routes/stats.js";
 import integrationRoutes from "./routes/integrations.js";
 
 const app = express();
-const CLIENT_ORIGIN = process.env.CLIENT_ORIGIN || "http://localhost:5173";
+// CLIENT_ORIGIN comes from oauth.js so that the CORS header and the OAuth
+// callbacks are built from one normalised origin. A trailing slash in the
+// setting would otherwise be echoed back to the browser and to the providers.
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 // Vercel builds every /api request into one serverless function. Depending on

@@ -10,10 +10,21 @@ const COOKIE_OPTS = {
   maxAge: 30 * 24 * 60 * 60 * 1000,
 };
 
-const CLIENT_ORIGIN = process.env.CLIENT_ORIGIN || "http://localhost:5173";
+// A trailing slash is a natural thing to type into an origin setting, and both
+// Google and GitHub compare redirect_uri character for character, so a single
+// stray slash produces ".../app//api/auth/google/callback" and every sign in is
+// refused with redirect_uri_mismatch. Normalise the origin once, here, so the
+// callback, the return-to cookie, the redirects and the CORS header are all
+// built from the same clean value.
+const cleanOrigin = (value) => String(value || "").trim().replace(/\/+$/, "");
+
+const CLIENT_ORIGIN = cleanOrigin(process.env.CLIENT_ORIGIN) || "http://localhost:5173";
 // OAuth callbacks must point at the public origin when deployed. CLIENT_ORIGIN
 // is required in production anyway (CORS), so it is the safest default here.
-const SERVER_ORIGIN = process.env.SERVER_ORIGIN || process.env.CLIENT_ORIGIN || `http://localhost:${process.env.PORT || 8787}`;
+const SERVER_ORIGIN =
+  cleanOrigin(process.env.SERVER_ORIGIN) ||
+  cleanOrigin(process.env.CLIENT_ORIGIN) ||
+  `http://localhost:${process.env.PORT || 8787}`;
 const OAUTH_COOKIE = "oauth_state";
 
 function providerConfig(provider) {
@@ -37,7 +48,7 @@ function providerConfig(provider) {
 }
 
 function requestOrigin(req) {
-  if (process.env.CLIENT_ORIGIN) return process.env.CLIENT_ORIGIN;
+  if (process.env.CLIENT_ORIGIN) return CLIENT_ORIGIN;
   try {
     return new URL(req.get("referer") || CLIENT_ORIGIN).origin;
   } catch (e) {
@@ -149,4 +160,4 @@ function adoptGuestChats(req, userId) {
   }
 }
 
-export { beginOAuth, finishOAuth, CLIENT_ORIGIN };
+export { beginOAuth, finishOAuth, cleanOrigin, CLIENT_ORIGIN };
