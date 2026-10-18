@@ -238,6 +238,16 @@ function Message({ m, animate = false, enterDelay = 0, onResolve, onRetry }) {
       </div>
     );
   }
+  // The first message of the prepared sample chat. It is not a chat bubble: it
+  // explains what the visitor is looking at before the conversation starts, in
+  // the same quiet card style as the rest of the thread.
+  if (m.kind === "sample_note") {
+    return (
+      <div className="sample-note">
+        <p>{m.text}</p>
+      </div>
+    );
+  }
   if (m.kind === "program_info") {
     return (
       <div className="program-info-row">

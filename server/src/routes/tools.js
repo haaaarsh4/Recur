@@ -1,8 +1,18 @@
 import { Router } from "express";
 import { db, syncToolCopy } from "../db.js";
 import { profileTask } from "../embeddings.js";
+import { identity } from "../middleware/auth.js";
 
 const router = Router();
+
+// The registry is one shared library, so every visitor needs an identity even
+// though reading it needs no account: that identity is what makes clearing it
+// personal instead of destructive.
+router.use(identity);
+
+function hiddenSet(ownerId) {
+  return new Set((db.data.hidden || []).filter((row) => row.ownerId === ownerId).map((row) => row.toolId));
+}
 
 // Public on purpose: the compiled-tool registry is shared, and showing real
 // numbers before someone logs in is the point (see the landing cards).
@@ -12,6 +22,10 @@ const router = Router();
 // record of what the family used to be. It does keep each row's copy in step
 // with the program behind it, so a description can never outlive the thing it
 // describes.
+//
+// What was cleared by this visitor is still listed, flagged so the client can
+// put it behind a "show hidden" control. The programs themselves never leave the
+// store for anyone else.
 router.get("/", async (req, res) => {
   await db.read();
   let changed = false;
@@ -20,38 +34,52 @@ router.get("/", async (req, res) => {
     if (syncToolCopy(tool, profile)) changed = true;
   }
   if (changed) await db.write();
-  const tools = [...db.data.tools].sort((a, b) => (b.executions || 0) - (a.executions || 0));
+  const hidden = hiddenSet(req.ownerId);
+  const tools = [...db.data.tools]
+    .sort((a, b) => (b.executions || 0) - (a.executions || 0))
+    .map((tool) => ({ ...tool, hiddenForYou: hidden.has(tool.id) }));
   res.json(tools);
 });
 
-// Deleting is public for the same reason reading is: this is one shared registry
-// that anybody browsing it can already compile a program into, not a personal
-// collection, so a row cannot be offered with a button that only works for some
-// visitors. Clearing it removes the programs, the observations waiting to be
-// compiled, and the execution log those numbers were measured from.
+// Clearing hides every program from the caller's own view. It is the "clear"
+// people expect, without taking anything away from the visitors who did not ask:
+// the programs, their evidence and their execution log all stay, and another
+// visitor sees exactly the same registry as before.
 router.delete("/", async (req, res) => {
   await db.read();
-  const removed = db.data.tools.length;
-  db.data.tools = [];
-  db.data.pending = [];
-  db.data.log = [];
-  await db.write();
-  res.json({ ok: true, removed });
+  const already = hiddenSet(req.ownerId);
+  let hidden = 0;
+  for (const tool of db.data.tools) {
+    if (already.has(tool.id)) continue;
+    db.data.hidden.push({ ownerId: req.ownerId, toolId: tool.id, ts: Date.now() });
+    hidden += 1;
+  }
+  if (hidden) await db.write();
+  res.json({ ok: true, hidden });
+});
+
+// Undo for the button above, so hiding is a view change and never a loss.
+router.delete("/hidden", async (req, res) => {
+  await db.read();
+  const before = db.data.hidden.length;
+  db.data.hidden = db.data.hidden.filter((row) => row.ownerId !== req.ownerId);
+  if (db.data.hidden.length !== before) await db.write();
+  res.json({ ok: true, restored: before - db.data.hidden.length });
 });
 
 // One program, addressed by the id the registry listed (its name works too, so a
-// row can be deleted by the thing it displays). The execution log entries for it
-// go with it: the reuse numbers describe the programs that exist, and a deleted
-// program is not answering anything.
+// row can be hidden by the thing it displays). Nothing is removed from the
+// store: this is the same personal hide as the clear above, for one row.
 router.delete("/:id", async (req, res) => {
   await db.read();
   const wanted = String(req.params.id);
-  const index = db.data.tools.findIndex((tool) => tool.id === wanted || tool.name === wanted);
-  if (index === -1) return res.status(404).json({ error: "That program is no longer in the registry." });
-  const [removed] = db.data.tools.splice(index, 1);
-  db.data.log = db.data.log.filter((entry) => entry.toolId !== removed.id);
-  await db.write();
-  res.json({ ok: true, removed: removed.name });
+  const tool = db.data.tools.find((candidate) => candidate.id === wanted || candidate.name === wanted);
+  if (!tool) return res.status(404).json({ error: "That program is no longer in the registry." });
+  if (!hiddenSet(req.ownerId).has(tool.id)) {
+    db.data.hidden.push({ ownerId: req.ownerId, toolId: tool.id, ts: Date.now() });
+    await db.write();
+  }
+  res.json({ ok: true, hidden: tool.name });
 });
 
 export default router;

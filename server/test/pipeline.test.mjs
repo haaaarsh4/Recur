@@ -31,6 +31,7 @@ beforeEach(() => {
   db.data.pending = [];
   db.data.log = [];
   db.data.chats = [];
+  db.data.hidden = [];
 });
 
 test("conflicting observations are discarded before compiling", () => {
@@ -121,6 +122,42 @@ test("a matched program is offered first and never runs on its own", async () =>
   // Running a program is not new evidence about the task, so nothing was queued
   // for another compile.
   assert.equal(db.data.pending.length, 0);
+});
+
+// Clearing a program from the registry is personal, so it has to hold where it
+// matters: the visitor who cleared it is not offered that program again, while
+// everybody else still is, and the artifact itself is untouched.
+test("a program cleared by one visitor is not offered to that visitor", async () => {
+  const members = [
+    observe("what is 2 plus 2", "4"),
+    observe("what is 1+1", "2"),
+  ];
+  const compiled = await compileToolFrom(members, "what is 10 plus 5", profileTask("what is 10 plus 5"), embed("what is 10 plus 5"));
+  assert.ok(compiled.tool, compiled.reason);
+
+  const visitor = "guest:cleared-the-registry";
+  db.data.hidden.push({ ownerId: visitor, toolId: compiled.tool.id, ts: Date.now() });
+
+  // For this visitor the request is no longer covered by a program, so it takes
+  // the ordinary path. Whether that ends in an answer or in an offline backend
+  // depends on the machine running the tests, so only the absence of the program
+  // is asserted: no offer, no local run.
+  const attempt = await processTask({ userId: visitor, messages: [] }, "what is 10 plus 5", "default", null).then(
+    (messages) => ({ messages }),
+    (error) => ({ error })
+  );
+  const messages = attempt.messages || [];
+  assert.equal(messages.some((message) => message.kind === "offer"), false, "no program was offered to the visitor who cleared it");
+  assert.equal(messages.some((message) => message.viaTool), false, "the cleared program did not run");
+  assert.ok(attempt.error || messages.length, "the request took the ordinary path");
+  assert.equal(compiled.tool.executions, 0);
+
+  // Somebody else still gets the offer, and the program is still in the registry.
+  const offered = await processTask({ userId: "guest:someone-else", messages: [] }, "what is 10 plus 5", "default", null);
+  assert.equal(offered[0].kind, "offer");
+  assert.equal(offered[0].toolName, "arithmetic-evaluator");
+  assert.equal(db.data.tools.length, 1);
+  assert.ok(db.data.tools[0].program);
 });
 
 test("approving an offer runs the program, never the model", async () => {

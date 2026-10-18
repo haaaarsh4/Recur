@@ -205,6 +205,12 @@ kbd { padding: 1px 5px; color: #777; border: 1px solid #353535; border-radius: 4
 .offer-resolved { color: #666; font-size: 11px; font-style: italic; }
 .sys-row { display: flex; justify-content: center; }
 .program-info-row { display: flex; justify-content: flex-start; }
+/* The opening note of the prepared sample chat. It is an ordinary card rather
+   than a bubble, because it describes the conversation instead of taking part
+   in it, and it is the same width as every other full-width card in a thread. */
+.sample-note { width: 100%; padding: 14px 16px; border: 1px solid #2e2e2e; border-radius: 10px; background: #151515; }
+.sample-note p { margin: 0; color: #a3a3a3; font-size: 12.5px; line-height: 1.6; }
+.chat-item.sample-chat .title { color: #bdbdbd; }
 .program-info-card { width: min(100%, 1000px); padding: 14px 16px; border: 1px solid #343434; border-radius: 10px; background: #141414; }
 .program-info-heading { display: flex; align-items: center; gap: 7px; margin-bottom: 11px; color: #e0e0e0; font-size: 12px; font-weight: 700; }
 .program-info-heading svg { width: 14px; height: 14px; }
@@ -299,6 +305,13 @@ kbd { padding: 1px 5px; color: #777; border: 1px solid #353535; border-radius: 4
 .confirm-row { display: flex; align-items: center; justify-content: flex-end; gap: 9px; margin-top: 10px; color: #999; font-size: 13.5px; }
 .confirm-row .danger-btn { color: #fff; border-color: #9f4b56; background: #8c3844; font-weight: 700; }
 .tv-error { margin-top: 10px; color: #cf8f97; font-size: 13.5px; text-align: right; }
+/* What this visitor cleared. The programs are still in the shared registry and
+   still working for everybody else, so the row reads as a view filter rather
+   than as a loss to undo. */
+.tv-hidden { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin-top: 18px; padding: 12px 14px; border: 1px solid #2c2c2c; border-radius: 10px; background: #141414; color: #8f8f8f; font-size: 13px; line-height: 1.5; }
+.tv-hidden button { flex: none; padding: 8px 13px; color: #cfcfcf; border: 1px solid #3a3a3a; border-radius: 8px; background: transparent; font-size: 12.5px; font-weight: 600; }
+.tv-hidden button:hover { color: #fff; border-color: #5a5a5a; }
+.tv-hidden button:disabled { opacity: .45; cursor: default; }
 
 .intg-card { margin-top: 4px; padding: 16px 17px; border: 1px solid #303030; border-radius: 11px; background: #151515; }
 .intg-status { display: flex; align-items: center; gap: 10px; color: #c9c9c9; font-size: 14px; }

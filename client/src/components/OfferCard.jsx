@@ -46,6 +46,8 @@ export default function OfferCard({ m, onResolve }) {
               ? "→ ran the compiled program locally"
               : m.resolved === "existing"
               ? "→ the program already registered for this task answered it locally"
+              : m.resolved === "compiled"
+              ? "→ compiled the program, ready to run locally"
               : m.resolved === "create"
               ? "→ compiled the program and ran it locally"
               : m.resolved === "clarify"

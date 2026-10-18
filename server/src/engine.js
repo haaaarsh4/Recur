@@ -109,12 +109,21 @@ function isReusableTool(tool) {
   return Boolean(tool?.program && tool.program.version && tool.program.read && tool.program.emit);
 }
 
+// The programs one visitor has cleared from their own view of the shared
+// registry. Clearing is personal: the artifact stays in the store and keeps
+// answering for everybody else, but it is not matched or offered to the person
+// who cleared it.
+function hiddenFor(ownerId) {
+  if (!ownerId) return new Set();
+  return new Set((db.data.hidden || []).filter((row) => row.ownerId === ownerId).map((row) => row.toolId));
+}
+
 // Every reusable program that is close enough to this request, strongest match
 // first. Reuse considers all of them, because one program that cannot read the
 // request must never hide another program that can.
-function matchCandidates(profile, vec) {
+function matchCandidates(profile, vec, exclude = null) {
   return db.data.tools
-    .filter(isReusableTool)
+    .filter((tool) => isReusableTool(tool) && !exclude?.has(tool.id))
     .map((tool) => ({ tool, sim: taskSimilarity(profile, vec, tool) }))
     .filter((candidate) => candidate.sim >= MATCH_THRESHOLD)
     .sort((a, b) => b.sim - a.sim);
@@ -436,7 +445,7 @@ async function processTask(chat, text, tier, creds = null) {
   // must never hide its task family from being compiled properly: the request
   // falls through to the repetition logic below, exactly like a fresh task, so
   // the family can still earn its offer.
-  const candidates = matchCandidates(profile, vec);
+  const candidates = matchCandidates(profile, vec, hiddenFor(chat?.userId));
   const matched = candidates.filter((candidate) => accepts(candidate.tool, text));
   const closed = candidates.find((candidate) => !matched.includes(candidate));
 
@@ -538,7 +547,7 @@ async function resolveOffer(chat, offerMsg, action, tier, creds = null) {
     // Reuse a program for this family only when it can answer this request. A
     // program that declines it disagrees with the evidence the user just gave, so
     // it is not coverage and compilation below replaces it.
-    const existing = matchCandidates(currentProfile, vec)
+    const existing = matchCandidates(currentProfile, vec, hiddenFor(chat?.userId))
       .map((candidate) => candidate.tool)
       .concat(db.data.tools.filter((candidate) => isReusableTool(candidate) && usableProfile(candidate)?.fingerprint === currentProfile.fingerprint))
       .find((candidate) => accepts(candidate, offerMsg.taskText));

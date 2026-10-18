@@ -2,6 +2,7 @@ import jwt from "jsonwebtoken";
 import { nanoid } from "nanoid";
 
 const SECRET = process.env.JWT_SECRET || "dev-secret-change-me";
+const GUEST_ID = /^[A-Za-z0-9_-]{8,64}$/;
 
 function signToken(user) {
   return jwt.sign({ id: user.id, email: user.email, name: user.name }, SECRET, { expiresIn: "30d" });
@@ -21,6 +22,13 @@ function requireAuth(req, res, next) {
 // Identity for any visitor: a signed-in user, or a temporary guest. Guests get
 // a session-scoped cookie (no maxAge, so the browser drops it when the browser
 // closes) and their chats are treated as disposable by the server.
+//
+// The cookie is the identity. The header is only how the very first request of a
+// visit becomes stable: a page load fires several requests at once, and with no
+// cookie yet each one would be handed a different guest and would set its own
+// cookie, so the browser could end up holding an identity that never owned the
+// sample chat it had already been shown. The client generates one id per browser
+// session and sends it, which makes every request in that visit the same guest.
 function identity(req, res, next) {
   const token = req.cookies?.token;
   if (token) {
@@ -36,8 +44,9 @@ function identity(req, res, next) {
     }
   }
   let guestId = req.cookies?.guest_id;
-  if (!guestId || !/^[A-Za-z0-9_-]{8,64}$/.test(guestId)) {
-    guestId = nanoid(21);
+  if (!GUEST_ID.test(guestId || "")) {
+    const hinted = String(req.get("x-recur-guest") || "");
+    guestId = GUEST_ID.test(hinted) ? hinted : nanoid(21);
   }
   // Session cookie: deliberately no maxAge so history disappears when the
   // browser closes, matching ChatGPT-style guest chat.

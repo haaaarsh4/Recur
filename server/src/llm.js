@@ -11,12 +11,48 @@ const LOOKS_LOCAL = /^(localhost|127\.0\.0\.1|\[::1\]|0\.0\.0\.0|192\.168\.|10\.
 const OLLAMA_BASE_URL = /^https?:\/\//i.test(RAW_OLLAMA_BASE_URL)
   ? RAW_OLLAMA_BASE_URL
   : `${LOOKS_LOCAL.test(RAW_OLLAMA_BASE_URL) ? "http" : "https"}://${RAW_OLLAMA_BASE_URL}`;
+
+function ollamaIsLocal() {
+  try {
+    return LOOKS_LOCAL.test(new URL(OLLAMA_BASE_URL).hostname);
+  } catch (e) {
+    return false;
+  }
+}
+
 // The default backend is Ollama on Harsh's laptop, reached from production
-// through a tunnel (OLLAMA_BASE_URL). When the laptop or the tunnel agent is
-// offline the tunnel edge is still up and answers on its behalf, so every
-// unreachable-backend path should surface this exact message.
+// through a Cloudflare tunnel (OLLAMA_BASE_URL). The common failure is not a
+// missing model, it is the tunnel not running, so every unreachable-backend
+// path says what actually has to happen next.
 const OLLAMA_OFFLINE_MESSAGE =
-  "Recur's model backend is offline right now. It runs locally on Harsh's machine, so replies are unavailable until it is back. Please try again later or contact Harsh.";
+  "Recur's model backend is offline. Ask Harsh to start the Cloudflare tunnel that serves the model, then send this again.";
+
+function ollamaOffline() {
+  const err = new Error(OLLAMA_OFFLINE_MESSAGE);
+  err.code = "ollama_offline";
+  return err;
+}
+
+async function readBody(res) {
+  try {
+    return await res.text();
+  } catch (e) {
+    return "";
+  }
+}
+
+// Ollama answers a missing model with a small JSON body. The tunnel edge in
+// front of it answers a dead hostname with an HTML page, and reading that as
+// "model not found" used to send people to `ollama pull` while the real fault
+// was the tunnel.
+function ollamaReportedMissingModel(body) {
+  try {
+    const parsed = JSON.parse(body);
+    return typeof parsed?.error === "string" && /model/i.test(parsed.error);
+  } catch (e) {
+    return false;
+  }
+}
 
 const DEFAULT_MODELS = {
   ollama: {
@@ -49,15 +85,9 @@ function apiKeyMissingError() {
   return err;
 }
 
-async function apiError(res) {
-  let body = "";
-  try {
-    body = await res.text();
-  } catch (e) {
-    /* ignore */
-  }
-  const err = new Error(`LLM API error ${res.status}: ${body.slice(0, 300)}`);
-  err.code = res.status === 401 ? "unauthorized" : res.status === 429 ? "rate_limited" : "upstream_error";
+function apiError(status, body) {
+  const err = new Error(`LLM API error ${status}: ${String(body).slice(0, 300)}`);
+  err.code = status === 401 ? "unauthorized" : status === 429 ? "rate_limited" : "upstream_error";
   return err;
 }
 
@@ -76,7 +106,7 @@ async function callAnthropic(apiKey, prompt, model, baseUrl = "https://api.anthr
       messages: [{ role: "user", content: prompt }],
     }),
   });
-  if (!res.ok) throw await apiError(res);
+  if (!res.ok) throw apiError(res.status, await readBody(res));
   const data = await res.json();
   return (data.content || [])
     .filter((b) => b.type === "text")
@@ -99,7 +129,7 @@ async function callOpenAI(apiKey, prompt, model, baseUrl = "https://api.openai.c
       ],
     }),
   });
-  if (!res.ok) throw await apiError(res);
+  if (!res.ok) throw apiError(res.status, await readBody(res));
   const data = await res.json();
   return data.choices?.[0]?.message?.content || "";
 }
@@ -111,7 +141,7 @@ async function callGemini(apiKey, prompt, model, baseUrl = "https://generativela
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ contents: [{ role: "user", parts: [{ text: `${RECUR_SYSTEM_PROMPT}\\n\\n${prompt}` }] }] }),
   });
-  if (!res.ok) throw await apiError(res);
+  if (!res.ok) throw apiError(res.status, await readBody(res));
   const data = await res.json();
   return (data.candidates || []).flatMap((candidate) => candidate.content?.parts || []).map((part) => part.text || "").join("\\n");
 }
@@ -132,21 +162,28 @@ async function callOllama(prompt, model, maxTokens = 320, timeoutMs = 45000) {
     }),
   });
   if (!res.ok) {
-    // The tunnel edge answers 502/503/504 when the agent behind it (the
-    // laptop) is offline. Distinguish that from Ollama's own errors.
-    if (res.status === 502 || res.status === 503 || res.status === 504) {
-      const err = new Error(OLLAMA_OFFLINE_MESSAGE);
-      err.code = "ollama_offline";
-      throw err;
+    // The tunnel edge answers 502, 503, 504 or 530 when the agent behind it
+    // (the laptop) is offline, and an HTML 404 when the hostname has no tunnel
+    // behind it at all. Only Ollama's own JSON 404 means a model is missing.
+    if (res.status === 502 || res.status === 503 || res.status === 504 || res.status === 530) {
+      throw ollamaOffline();
     }
-    if (res.status === 404) {
+    const body = await readBody(res);
+    if (res.status === 404 && ollamaReportedMissingModel(body)) {
       const err = new Error(`Ollama could not find model ${model}. Run ollama pull ${model}.`);
       err.code = "model_not_found";
       throw err;
     }
-    throw await apiError(res);
+    if (res.status === 404) throw ollamaOffline();
+    throw apiError(res.status, body);
   }
-  const data = await res.json();
+  let data;
+  try {
+    data = JSON.parse(await readBody(res));
+  } catch (e) {
+    // A 200 that is not JSON is the tunnel edge serving an error page.
+    throw ollamaOffline();
+  }
   return data.message?.content || data.response || "";
 }
 
@@ -176,12 +213,9 @@ async function callLLM(prompt, tier = "default", creds = null) {
     // user can act on, most commonly Ollama being unreachable in a deployment
     // where no local daemon exists.
     if (e && (e.code === "ENOTFOUND" || e.code === "ECONNREFUSED" || e.code === "EAI_AGAIN" || e.code === "ERR_INVALID_URL" || /fetch failed/i.test(String(e.message)))) {
-      const err = new Error(
-        protocol === "ollama"
-          ? OLLAMA_OFFLINE_MESSAGE
-          : `Could not reach the ${provider} API. Check the base URL and network access.`
-      );
-      err.code = protocol === "ollama" ? "ollama_offline" : "model_unreachable";
+      if (protocol === "ollama") throw ollamaOffline();
+      const err = new Error(`Could not reach the ${provider} API. Check the base URL and network access.`);
+      err.code = "model_unreachable";
       throw err;
     }
     throw e;
@@ -218,7 +252,7 @@ async function testKey(protocol, apiKey, model = null, baseUrl = null) {
   try {
     if (protocol === "ollama") {
       const res = await fetch(`${OLLAMA_BASE_URL}/api/tags`);
-      if (!res.ok) return { ok: false, error: "Could not reach Ollama. Start it with ollama serve." };
+      if (!res.ok) return { ok: false, error: ollamaIsLocal() ? "Could not reach Ollama. Start it with ollama serve." : "Could not reach the model backend. Start the Cloudflare tunnel that serves it." };
       const data = await res.json();
       const installed = (data.models || []).map((item) => item.name);
       if (model && !installed.includes(model)) {
@@ -257,6 +291,14 @@ async function testKey(protocol, apiKey, model = null, baseUrl = null) {
     if (!res.ok) return { ok: false, error: `Provider responded with ${res.status}. The key may be valid but the account could be out of credits.` };
     return { ok: true };
   } catch (e) {
+    if (protocol === "ollama") {
+      return {
+        ok: false,
+        error: ollamaIsLocal()
+          ? "Could not reach Ollama. Start it with ollama serve."
+          : "Could not reach the model backend. Start the Cloudflare tunnel that serves it.",
+      };
+    }
     return { ok: false, error: "Could not reach the provider. Check that it is running and try again." };
   }
 }

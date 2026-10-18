@@ -1,6 +1,7 @@
-// The shared tool registry, over HTTP: what it lists, what deleting one program
-// does, and what clearing it does. The registry is public on purpose, so these
-// requests carry no session, exactly like the registry page does.
+// The shared tool registry, over HTTP: what it lists, what hiding one program
+// does, what clearing it does, and what neither of them does to anybody else.
+// The registry is public on purpose, so these requests carry no account, only
+// the guest cookie every visitor already has.
 //
 // Run with: npm --prefix server test
 
@@ -29,6 +30,16 @@ before(async () => {
 });
 
 after(() => server?.close());
+
+// Two visitors, so "cleared for me" can be checked against somebody else's view.
+const ALICE = { Cookie: "guest_id=registry-alice-0001" };
+const BOB = { Cookie: "guest_id=registry-bob-000001" };
+
+function who(cookie = ALICE) {
+  return { ...cookie, "content-type": "application/json" };
+}
+
+const list = async (cookie) => (await fetch(`${base}/api/tools`, { headers: who(cookie) })).json();
 
 const PALINDROME_DEMONSTRATIONS = [
   { input: "is civic a palindrome", output: 'Yes, "civic" is a palindrome.' },
@@ -68,52 +79,76 @@ test("the registry lists every program without a session", async () => {
   assert.equal(programmed.specification, specificationFor(programmed.program));
   assert.equal(programmed.summary.path, programPath(programmed.program));
   assert.ok(!programmed.listing.includes("stale path"));
+  // Nothing has been cleared by this visitor, so nothing is flagged.
+  assert.deepEqual(tools.map((tool) => tool.hiddenForYou), [false, false]);
 });
 
-test("deleting one program removes that program and its own executions only", async () => {
-  const keep = palindromeTool("keep-me");
-  const drop = palindromeTool("drop-me");
-  db.data.tools = [keep, drop];
-  db.data.log = [
-    { id: "log-1", type: "program", toolId: drop.id, latencyMs: 0.2 },
-    { id: "log-2", type: "general", latencyMs: 900 },
-    { id: "log-3", type: "program", toolId: keep.id, latencyMs: 0.1 },
-  ];
+test("hiding one program removes it from that visitor's view only", async () => {
+  db.data.tools = [palindromeTool("keep-me"), palindromeTool("drop-me")];
+  db.data.hidden = [];
   await db.write();
 
-  const res = await fetch(`${base}/api/tools/${drop.id}`, { method: "DELETE" });
+  const res = await fetch(`${base}/api/tools/drop-me`, { method: "DELETE", headers: who() });
   assert.equal(res.status, 200);
-  assert.deepEqual(await res.json(), { ok: true, removed: "drop-me" });
+  assert.deepEqual(await res.json(), { ok: true, hidden: "drop-me" });
 
+  // The program is still in the store, still listed, and still answering: it is
+  // only flagged for the visitor who cleared it, which is what the client uses
+  // to move it behind its "show hidden" control.
   await db.read();
-  assert.deepEqual(db.data.tools.map((tool) => tool.name), ["keep-me"]);
-  // The deleted program is not answering anything, so its runs do not count
-  // towards the reuse numbers any more. General model calls are untouched.
-  assert.deepEqual(db.data.log.map((entry) => entry.id), ["log-2", "log-3"]);
-  assert.deepEqual((await (await fetch(`${base}/api/tools`)).json()).map((tool) => tool.name), ["keep-me"]);
+  assert.deepEqual(db.data.tools.map((tool) => tool.name).sort(), ["drop-me", "keep-me"]);
+  const mine = await list();
+  assert.deepEqual(mine.map((tool) => tool.name), ["keep-me", "drop-me"]);
+  assert.deepEqual(mine.filter((tool) => tool.hiddenForYou).map((tool) => tool.name), ["drop-me"]);
+
+  // Somebody else's registry is untouched.
+  const theirs = await list(BOB);
+  assert.deepEqual(theirs.filter((tool) => tool.hiddenForYou), []);
+
+  // Hiding twice is not two rows, and the restore brings the whole list back.
+  await fetch(`${base}/api/tools/drop-me`, { method: "DELETE", headers: who() });
+  await db.read();
+  assert.equal(db.data.hidden.length, 1);
+  const restored = await fetch(`${base}/api/tools/hidden`, { method: "DELETE", headers: who() });
+  assert.deepEqual(await restored.json(), { ok: true, restored: 1 });
+  assert.deepEqual((await list()).filter((tool) => tool.hiddenForYou), []);
+  // The restore is held to the visitor who asked for it: Bob never hid anything.
+  await fetch(`${base}/api/tools/drop-me`, { method: "DELETE", headers: who(BOB) });
+  assert.deepEqual(await (await fetch(`${base}/api/tools/hidden`, { method: "DELETE", headers: who() })).json(), { ok: true, restored: 0 });
+  await db.read();
+  assert.equal(db.data.hidden.length, 1);
+  await fetch(`${base}/api/tools/hidden`, { method: "DELETE", headers: who(BOB) });
 });
 
-test("deleting a program that is not in the registry says so", async () => {
-  const res = await fetch(`${base}/api/tools/not-a-program`, { method: "DELETE" });
+test("hiding a program that is not in the registry says so", async () => {
+  const res = await fetch(`${base}/api/tools/not-a-program`, { method: "DELETE", headers: who() });
   assert.equal(res.status, 404);
   assert.match((await res.json()).error, /no longer in the registry/);
 });
 
-test("clearing the registry empties programs, observations and stats", async () => {
+test("clearing hides every program for the visitor who cleared it", async () => {
   db.data.tools = [palindromeTool(), legacyTool()];
   db.data.pending = [{ id: "p1", text: "is kayak a palindrome", output: "Yes", createdAt: Date.now() }];
   db.data.log = [{ id: "log-1", type: "program", toolId: "palindrome-checker-id", latencyMs: 0.2 }];
+  db.data.hidden = [];
   await db.write();
 
-  const res = await fetch(`${base}/api/tools`, { method: "DELETE" });
+  const res = await fetch(`${base}/api/tools`, { method: "DELETE", headers: who() });
   assert.equal(res.status, 200);
-  assert.deepEqual(await res.json(), { ok: true, removed: 2 });
+  assert.deepEqual(await res.json(), { ok: true, hidden: 2 });
 
   await db.read();
-  assert.deepEqual(db.data.tools, []);
-  assert.deepEqual(db.data.pending, []);
-  assert.deepEqual(db.data.log, []);
-  assert.deepEqual(await (await fetch(`${base}/api/tools`)).json(), []);
+  // Nothing disappeared: the programs, the observations waiting to be compiled
+  // and the execution log are all exactly where they were.
+  assert.deepEqual(db.data.tools.map((tool) => tool.name).sort(), ["palindrome-checker", "saved-request"]);
+  assert.deepEqual(db.data.pending.map((entry) => entry.id), ["p1"]);
+  assert.deepEqual(db.data.log.map((entry) => entry.id), ["log-1"]);
+  assert.deepEqual((await list()).map((tool) => tool.hiddenForYou), [true, true]);
+
+  // Another visitor still sees the whole shared registry.
+  assert.deepEqual((await list(BOB)).map((tool) => tool.hiddenForYou), [false, false]);
+  await fetch(`${base}/api/tools/hidden`, { method: "DELETE", headers: who() });
+  assert.deepEqual((await list()).map((tool) => tool.hiddenForYou), [false, false]);
 });
 
 test("registry copy is regenerated from the stored program, not from an old dump", () => {

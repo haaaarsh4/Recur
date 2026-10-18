@@ -1,7 +1,13 @@
 import { Router } from "express";
 import { db } from "../db.js";
+import { identity } from "../middleware/auth.js";
 
 const router = Router();
+
+// The numbers are the same for everyone, but the identity is still resolved:
+// every response a page load gets back should name the same visitor, so the
+// browser cannot end up holding a different guest than the chat it was shown.
+router.use(identity);
 
 // Public on purpose: these are aggregate, non-personal numbers, same reasoning
 // as tools.js.

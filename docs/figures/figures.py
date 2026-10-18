@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
-"""The seven figures the README is built around.
+"""The eight figures the README is built around.
 
 Run after fetching the fonts (see generate.py):
 
     FONT_DIR=/tmp/recur-docs/fonts python3 docs/figures/figures.py
 
-Layout is flow based: every box is sized from the text it holds, so rewording a
-paragraph grows its box instead of spilling out of it. Each figure is one
-function so a single one can be re-rendered while editing it.
+Each figure is one function, so a single one can be re-rendered while editing it.
+Every box is sized from the text it holds and every line sits on a baseline, so a
+reworded sentence grows its container instead of crowding the border.
 """
 
 import os
@@ -16,60 +16,56 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from generate import (  # noqa: E402
-    GREEN,
+    GUTTER,
     INK,
     INK_SOFT,
+    MARGIN,
     MUTED,
+    LINE,
     PAPER,
-    PEACH,
     PEACH_LIGHT,
+    W,
     WHITE,
-    Sketch,
-    block_height,
+    Canvas,
+    Face,
+    caps_bold,
     hand,
     mono,
+    mono_bold,
+    para_height,
 )
 
-W = 1600
+CW = W - MARGIN * 2
+
+BODY = hand(20, 400, INK_SOFT, line=30)
+SMALL = hand(17, 400, MUTED, line=25)
+CARD_TITLE = hand(24, 600, INK, line=32)
+CAPTION = hand(17, 400, MUTED, line=26)
+LABEL = caps_bold(12, INK_SOFT, 2.2)
+LABEL_LIGHT = caps_bold(12, MUTED, 2.2)
+MONO = Face("mono", 16, "Regular", INK, 0, 28)
 
 
-def para(s, x, y, text, size=22, weight=400, width=520, fill=INK_SOFT, gap=7):
-    return s.sentence(x, y, text, size, weight, width, "la", fill, gap)
+def label(s, x, top, text, face=None):
+    face = face or LABEL
+    s.text(x, top + face.cap, text.upper(), face)
+    return top + face.line
 
 
-def badge(s, x, y, label, size=34, fill=PEACH_LIGHT):
-    s.d.ellipse([x, y, x + size, y + size], outline=INK, width=2, fill=fill)
-    s.text(x + size / 2, y + size / 2 + 1, label, hand(20, 800), INK, anchor="mm")
-
-
-def tick(s, x, y, scale=1.0):
-    s.d.line([(x, y), (x + 9 * scale, y + 10 * scale), (x + 24 * scale, y - 12 * scale)], fill=GREEN, width=4, joint="curve")
-
-
-def cross(s, x, y, scale=1.0):
-    s.d.line([(x, y), (x + 18 * scale, y + 18 * scale)], fill=INK_SOFT, width=3)
-    s.d.line([(x, y + 18 * scale), (x + 18 * scale, y)], fill=INK_SOFT, width=3)
-
-
-def mark(s, x, y, kind="dot", size=23, fill=INK_SOFT):
-    if kind == "dot":
-        s.d.ellipse([x - 17, y + size * 0.5, x - 6, y + size * 0.5 + 11], fill=fill)
-    elif kind == "tick":
-        tick(s, x - 22, y + 10, 0.9)
-    else:
-        cross(s, x - 24, y + 4, 0.8)
-
-
-def note(s, y, text, size=25):
-    """The closing note band, sized to its sentence."""
-    width = s.w - s.margin * 2 - 52
-    height = max(76, block_height(text, size, 500, width) + 42)
-    s.band(s.margin, y, s.w - s.margin * 2, height, text, size=size)
+def note(s, y, text, size=20):
+    """The closing band, sized to its sentence and padded evenly."""
+    face = hand(size, 500, INK, line=int(size * 1.42))
+    width = CW - 56
+    body_h = para_height(text, face, width)
+    height = 28 * 2 + body_h
+    s.rect(MARGIN, y, CW, height, fill=PEACH_LIGHT, stroke=INK, width=1.5, radius=14)
+    s.para(MARGIN + 28, y + (height - body_h) / 2, text, face, width)
     return y + height
 
 
-def caption(s, x, y, text, size=21, width=1200):
-    return s.sentence(x, y, text, size, 400, width, "la", MUTED)
+def caption(s, x, top, text, width=CW, face=None):
+    face = face or CAPTION
+    return s.para(x, top, text, face, width)
 
 
 # ---------------------------------------------------------------------------
@@ -78,53 +74,67 @@ def caption(s, x, y, text, size=21, width=1200):
 
 
 def figure_why():
-    s = Sketch(
-        W,
-        1400,
+    s = Canvas(
         "01 · why",
         ["Solve it once.", "Run it forever."],
         "A general model re-derives the same answer every time, and a derivation can drift. Recur compiles the repeated task once, then runs that program.",
-        seed=11,
     )
-    top = s.content_top
+    top = s.y
+    pad = 30
+    col_w = (CW - GUTTER) // 2
+    row_h, row_gap = 78, 12
     rows = [
         ("is civic a palindrome", "Yes, \u201ccivic\u201d is a palindrome."),
         ("is madam a palindrome", "Madam reads the same."),
         ("is racecar a palindrome", "Yes, \u201cracecar\u201d is a palindrome."),
     ]
-    row_h, row_gap = 92, 16
-    left_h = 66 + len(rows) * row_h + (len(rows) - 1) * row_gap + 58
-    note_body = "search a typed dataflow for the cheapest program that reproduces the evidence you gave"
-    compile_h = 50 + block_height(note_body, 20, 400, 594) + 26
-    right_h = 66 + compile_h + 66 + 108 + 50
-    panel_h = max(left_h, right_h)
+    q = hand(19, 500, INK, line=26)
+    a = hand(17, 400, MUTED, line=24)
 
-    left = s.panel(s.margin, top, 690, panel_h)
-    right = s.panel(826, top, 690, panel_h)
-    s.caps(left[0] + 28, top + 26, "every time, from scratch", size=17)
-    s.caps(right[0] + 28, top + 26, "compiled once, run forever", size=17)
+    compile_body = "0.7 s, one time: search a typed dataflow for the cheapest program that reproduces the evidence you gave."
+    compile_face = hand(17, 400, INK_SOFT, line=27)
+    compile_text_w = col_w - pad * 2 - 52
+    compile_h = 26 + 32 + 8 + para_height(compile_body, compile_face, compile_text_w) + 26
+    arrow_gap = 46
+    run_h = 104
+    panel_h = max(
+        pad * 2 + LABEL.line + 22 + len(rows) * row_h + (len(rows) - 1) * row_gap + 20 + CAPTION.line,
+        pad * 2 + compile_h + arrow_gap + run_h + 18 + CAPTION.line,
+    )
 
-    y = top + 66
+    for index, head in enumerate(("every time, from scratch", "compiled once, run forever")):
+        x = MARGIN + index * (col_w + GUTTER)
+        s.rect(x, top, col_w, panel_h, fill=WHITE, stroke=INK, width=2, radius=18)
+        label(s, x + pad, top + pad, head)
+
+    # Left: three fresh derivations.
+    left_x = MARGIN + pad
+    inner_w = col_w - pad * 2
+    y = top + pad + LABEL.line + 22
     for question, answer in rows:
-        s.round_box(left[0] + 28, y, 634, row_h, radius=12, fill=PAPER, outline=INK_SOFT, width=2, jitter=0.8)
-        s.text(left[0] + 46, y + 20, question, hand(21, 500), INK)
-        s.text(left[0] + 46, y + 52, answer, hand(20, 400), MUTED)
-        s.text(left[0] + 646, y + 46, "\u2248 3.9 s", hand(22, 700), INK, anchor="rm")
+        s.rect(left_x, y, inner_w, row_h, fill=PAPER, stroke=LINE, width=1.5, radius=12)
+        s.text(left_x + 18, y + 31, question, q)
+        s.text(left_x + 18, y + 58, answer, a)
+        timing = hand(17, 700, INK)
+        s.text(left_x + inner_w - 18 - timing.width("\u2248 3.9 s"), y + 46, "\u2248 3.9 s", timing)
         y += row_h + row_gap
-    caption(s, left[0] + 28, y + 6, "three derivations, three chances to drift", 22)
+    s.text(left_x, top + panel_h - pad - CAPTION.ascent + 3, "three derivations, three chances to drift", CAPTION)
 
-    s.round_box(right[0] + 28, top + 66, 634, compile_h, radius=12, fill=PEACH_LIGHT, outline=INK, width=3)
-    s.text(right[0] + 46, top + 84, "compile once", hand(26, 700), INK)
-    para(s, right[0] + 46, top + 126, f"\u2248 0.7 s, one time: {note_body}.", 20, 400, 594)
+    # Right: one compile, then a local run.
+    right_x = MARGIN + col_w + GUTTER + pad
+    s.rect(right_x, top + pad, inner_w, compile_h, fill=PEACH_LIGHT, stroke=INK, width=1.5, radius=12)
+    s.text(right_x + 26, top + pad + 26 + hand(24, 600).cap, "compile once", hand(24, 600))
+    s.para(right_x + 26, top + pad + 26 + 32 + 8, compile_body, compile_face, compile_text_w)
 
-    s.arrow(right[0] + 345, top + 66 + compile_h + 12, right[0] + 345, top + 66 + compile_h + 60, width=3)
-    s.text(right[0] + 372, top + 66 + compile_h + 36, "then this", hand(20, 400), MUTED, anchor="lm")
+    stem_y = top + pad + compile_h
+    s.arrow(right_x + 40, stem_y + 4, right_x + 40, stem_y + arrow_gap - 6, width=2)
+    s.text(right_x + 62, stem_y + arrow_gap / 2 + 5, "then this", hand(17, 400, MUTED))
 
-    run_y = top + 66 + compile_h + 66
-    s.round_box(right[0] + 28, run_y, 634, 108, radius=12, fill=PAPER, outline=INK, width=3)
-    s.text(right[0] + 46, run_y + 18, "runs locally, on your machine", hand(23, 500), INK)
-    s.text(right[0] + 46, run_y + 58, "< 1 ms  ·  no model call  ·  same answer every time", hand(21, 700), INK)
-    caption(s, right[0] + 28, run_y + 118, "computed, not recalled", 22)
+    run_y = stem_y + arrow_gap
+    s.rect(right_x, run_y, inner_w, run_h, fill=PAPER, stroke=INK, width=2, radius=12)
+    s.text(right_x + 26, run_y + 30, "runs locally, on your machine", hand(21, 500))
+    s.text(right_x + 26, run_y + 64, "< 1 ms  \u00b7  no model call  \u00b7  same answer every time", hand(17, 700, INK_SOFT))
+    s.text(right_x, top + panel_h - pad - CAPTION.ascent + 3, "computed, not recalled", CAPTION)
 
     note(s, top + panel_h + 44, "Nothing is compiled, and nothing is reused, without you saying yes first.")
     s.save("01-why.png")
@@ -136,53 +146,55 @@ def figure_why():
 
 
 def figure_pipeline():
-    s = Sketch(
-        W,
-        1300,
-        "02 · how it works",
+    s = Canvas(
+        "02 \u00b7 how it works",
         ["Three repeats become", "one program."],
         "Discovery is cheap, because repeating a task already did the hard part. The interesting work is deciding what the evidence licenses.",
-        seed=23,
     )
-    top = s.content_top
+    top = s.y
     stages = [
-        ("01", "profile", "Intent, domain, operation, and a 256-dimension vector of words and word pairs. Two requests match on shape, not just on wording."),
-        ("02", "match", "0.78 similarity or better against a stored program, and the program has to be able to read this request. A match is offered back to you by name."),
-        ("03", "observe", "The same task seen three times, each stored with the answer the model actually gave. Three shows a family; it does not yet earn trust."),
-        ("04", "compile", "Best-first search over a typed dataflow IR with a simplicity prior. The cheapest program that reproduces every demonstration exactly wins."),
-        ("05", "verify", "Exact and variant coverage, consistency, leave-one-out, 64 generated inputs, and an acceptance head trained on the same evidence."),
+        ("01", "profile", "Intent, domain, operation, and a 256-dimension vector of words and word pairs. Two requests match on shape."),
+        ("02", "match", "0.78 similarity or better, and the program has to be able to read the request. A match is offered back to you by name."),
+        ("03", "observe", "The same task seen three times, each stored with the answer the model gave. Three shows a family, not trust."),
+        ("04", "compile", "Best-first search over a typed dataflow. The cheapest program that reproduces every demonstration wins."),
+        ("05", "verify", "Coverage, consistency, leave-one-out, 64 generated inputs, and an acceptance head trained on the evidence."),
     ]
-    card_w, gap = 258, 34
-    body_w = card_w - 40
-    card_h = 86 + max(block_height(body, 20, 400, body_w) for _, _, body in stages) + 26
-    x = s.margin + 3
+    gap = 28
+    card_w = (CW - gap * 4) // 5
+    pad = 22
+    body = hand(17, 400, INK_SOFT, line=26)
+    body_w = card_w - pad * 2
+    body_h = max(para_height(text, body, body_w) for _, _, text in stages)
+    card_h = pad + 30 + 14 + LABEL.line + 12 + body_h + pad
+
     centres = []
-    for index, (number, title, body) in enumerate(stages):
-        cx = x + index * (card_w + gap)
-        centres.append(cx + card_w / 2)
-        s.round_box(cx, top, card_w, card_h, radius=18, fill=WHITE, outline=INK, width=3)
-        s.d.rectangle([cx + 20, top + 20, cx + 62, top + 56], outline=INK, width=2, fill=PEACH_LIGHT)
-        s.text(cx + 41, top + 38, number, mono(20, "Bold"), INK, anchor="mm")
-        s.caps(cx + 20, top + 72, title, size=19)
-        para(s, cx + 20, top + 106, body, 20, 400, body_w)
+    for index, (number, title, text) in enumerate(stages):
+        x = MARGIN + index * (card_w + gap)
+        centres.append(x + card_w / 2)
+        s.rect(x, top, card_w, card_h, fill=WHITE, stroke=INK, width=2, radius=16)
+        s.rect(x + pad, top + pad, 30, 30, fill=PEACH_LIGHT, stroke=INK, width=1.5, radius=8)
+        f = mono_bold(14)
+        s.text(x + pad + 15 - f.width(number) / 2, top + pad + 15 + f.cap / 2, number, f)
+        label(s, x + pad, top + pad + 44, title)
+        s.para(x + pad, top + pad + 44 + LABEL.line + 12, text, body, body_w)
         if index:
-            s.arrow(cx - gap + 6, top + card_h / 2, cx - 6, top + card_h / 2, width=3)
+            s.arrow(x - gap + 4, top + card_h / 2, x - 4, top + card_h / 2, width=2.2, head=8)
 
-    flow_y = top + card_h + 44
-    s.arrow(centres[0], flow_y, centres[4], flow_y, width=2, colour=INK_SOFT)
-    s.text(centres[2], flow_y + 14, "one pipeline, every request", hand(20, 400), MUTED, anchor="mm")
+    flow_y = top + card_h + 42
+    s.arrow(centres[0], flow_y, centres[-1], flow_y, width=1.6, head=8)
+    flow_label = hand(16, 400, MUTED)
+    s.text((centres[0] + centres[-1]) / 2 - flow_label.width("one pipeline, every request") / 2, flow_y + 24, "one pipeline, every request", flow_label)
 
-    decline_y = flow_y + 54
-    box_w = 330
-    # Under the last stage, but never past the page margin: the drop line moves
-    # with the box so the two stay a single gesture.
-    drop_x = min(centres[4], s.w - s.margin - box_w / 2)
-    s.arrow(drop_x, flow_y + 26, drop_x, decline_y - 8, width=2, colour=INK_SOFT)
-    s.round_box(drop_x - box_w / 2, decline_y, box_w, 92, radius=14, fill=PAPER, outline=INK_SOFT, width=2)
-    s.text(drop_x, decline_y + 22, "declines instead of guessing", hand(21, 500), INK_SOFT, anchor="mm")
-    s.text(drop_x, decline_y + 54, "and the model answers it", hand(19, 400), MUTED, anchor="mm")
+    box_w, box_h = 300, 86
+    box_x = W - MARGIN - box_w
+    box_y = flow_y + 52
+    drop_x = box_x + box_w / 2
+    s.arrow(drop_x, flow_y + 8, drop_x, box_y - 7, width=1.6, head=7)
+    s.rect(box_x, box_y, box_w, box_h, fill=PAPER, stroke=LINE, width=1.5, radius=12)
+    s.text(box_x + 24, box_y + 32, "declines instead of guessing", hand(19, 500))
+    s.text(box_x + 24, box_y + 58, "and the model answers it", hand(16, 400, MUTED))
 
-    note(s, decline_y + 132, "No match, no offer, no program: the request still gets an answer.")
+    note(s, box_y + box_h + 44, "No match, no offer, no program: the request still gets an answer.")
     s.save("02-how-it-works.png")
 
 
@@ -192,53 +204,61 @@ def figure_pipeline():
 
 
 def figure_anatomy():
-    s = Sketch(
-        W,
-        1500,
-        "03 · anatomy",
+    s = Canvas(
+        "03 \u00b7 anatomy",
         ["A program is one read,", "some steps, one answer."],
         "What gets stored is not a prompt and not a fine-tuned model. It is a tiny typed dataflow, versioned in a registry and run by a virtual machine that opens no sockets.",
-        seed=37,
     )
-    top = s.content_top
+    top = s.y
     boxes = [
         ("read", "exactly one", "request text \u2192 subject"),
         ("steps", "zero or more", "subject \u2192 value"),
         ("emit", "exactly one", "value + subject \u2192 answer"),
     ]
-    bw, gap, bh = 420, 90, 168
+    bw = (CW - 80) // 3
+    bh = 150
     for index, (name, count, types) in enumerate(boxes):
-        bx = s.margin + index * (bw + gap)
-        s.round_box(bx, top, bw, bh, radius=18, fill=PEACH_LIGHT if index == 1 else WHITE, outline=INK, width=3)
-        s.caps(bx + 26, top + 26, name, size=22, tracking=3)
-        s.text(bx + 26, top + 66, count, hand(21, 400), MUTED)
-        s.text(bx + 26, top + 108, types, mono(20), INK)
+        x = MARGIN + index * (bw + 40)
+        s.rect(x, top, bw, bh, fill=PEACH_LIGHT if index == 1 else WHITE, stroke=INK, width=2, radius=16)
+        label(s, x + 26, top + 24, name, caps_bold(13, INK, 2.6))
+        s.text(x + 26, top + 24 + 18 + 26, count, hand(18, 400, INK_SOFT))
+        s.text(x + 26, top + 24 + 18 + 26 + 40, types, mono(16, "Regular", INK, 0))
         if index:
-            s.arrow(bx - gap + 8, top + bh / 2, bx - 8, top + bh / 2, width=3)
-    s.text(W / 2, top + bh + 26, "a program is pure: the same request always produces the same answer, with no state and no model", hand(21, 400), MUTED, anchor="mm")
+            s.arrow(x - 40 + 8, top + bh / 2, x - 8, top + bh / 2, width=2.2, head=8)
 
-    ex_top = top + bh + 96
-    s.caps(s.margin, ex_top, "two programs this repository actually compiled", size=19)
+    f = hand(18, 400, MUTED)
+    purity = "A program is pure: the same request always produces the same answer, with no state and no model."
+    note_y = top + bh + 50
+    s.text(MARGIN, note_y + f.cap, purity, f)
+
+    ex_label_y = note_y + f.line + 42
+    label(s, MARGIN, ex_label_y, "two programs this repository actually compiled")
+    ex_top = ex_label_y + LABEL.line + 18
+
     examples = [
         (
             "text-reverser",
-            "read: the word after \u201creverse\u201d\nstep: reverses it\nemit: fills in the recorded wording",
+            "read    the word after \u201creverse\u201d\nstep    reverse it\nemit    fill in the recorded wording",
             "Four demonstrations, all four answered wrongly by the model, none reproduced exactly. It still reverses fresh words correctly, because the computation was kept and the replies were only phrasing.",
         ),
         (
             "palindrome-checker",
-            "read: the word before \u201cpalindrome\u201d\nstep: checks whether it reads the same way backwards\nemit: chooses between the recorded wordings",
+            "read    the word before \u201cpalindrome\u201d\nstep    checks whether it reads the same backwards\nemit    chooses between the recorded wordings",
             "One reply named a different word and one claimed a palindrome that was not one. Both are reported as model errors and set aside, and the program computes the answer instead.",
         ),
     ]
-    card_w = (W - s.margin * 2 - 30) / 2
-    example_h = 108 + 3 * 28 + 22 + max(block_height(note_text, 20, 400, card_w - 52) for _, _, note_text in examples) + 32
-    for index, (name, flow, note_text) in enumerate(examples):
-        cx = s.margin + index * (card_w + 30)
-        s.round_box(cx, ex_top + 40, card_w, example_h, radius=16, fill=WHITE, outline=INK, width=3)
-        s.text(cx + 26, ex_top + 62, name, hand(26, 700), INK)
-        s.mono_block(cx + 26, ex_top + 106, flow, size=20, max_width=card_w - 52)
-        para(s, cx + 26, ex_top + 108 + 3 * 28 + 22, note_text, 20, 400, card_w - 52)
+    card_w = (CW - 32) // 2
+    pad = 28
+    text_w = card_w - pad * 2
+    card_h = pad + 32 + 14 + 3 * MONO.line + 22 + max(para_height(text, BODY, text_w) for _, _, text in examples) + pad
+
+    for index, (name, flow, body_text) in enumerate(examples):
+        x = MARGIN + index * (card_w + 32)
+        s.rect(x, ex_top, card_w, card_h, fill=WHITE, stroke=INK, width=2, radius=16)
+        s.text(x + pad, ex_top + pad + 22, name, CARD_TITLE)
+        s.mono_block(x + pad, ex_top + pad + 46, flow, MONO, text_w)
+        s.para(x + pad, ex_top + pad + 46 + 3 * MONO.line + 22, body_text, BODY, text_w)
+
     s.save("03-anatomy.png")
 
 
@@ -248,15 +268,12 @@ def figure_anatomy():
 
 
 def figure_evidence():
-    s = Sketch(
-        W,
-        1300,
-        "04 · evidence",
-        ["What the evidence", "licenses, and what it refuses."],
+    s = Canvas(
+        "04 \u00b7 evidence",
+        ["What the evidence licenses,", "and what it refuses."],
         "These are rules about evidence, not cases for a task family. The same rules decide for palindromes, arithmetic, counting and lookups, which is why the compiler has no list of supported tasks.",
-        seed=41,
     )
-    top = s.content_top
+    top = s.y
     kept = [
         "Demonstrations that agree about one computation. Three repeats show a family, and every one of them is stored with the answer it received.",
         "A correct computation even when the recorded reply disagreed. A reply that contradicts a decidable answer is a model error, and it is reported as one instead of being imitated.",
@@ -267,23 +284,32 @@ def figure_evidence():
         "A reply about a different word than the request named. It stays useful as phrasing evidence and is worthless as an answer.",
         "A sentence that states a number the computation never produced. \u201cYes, 12 is the 7th number in the Fibonacci series.\u201d asserts a position nothing derived.",
     ]
-    col_w = (W - s.margin * 2 - 40) / 2
-    text_w = col_w - 104
-    col_h = 74 + sum(block_height(text, 23, 400, text_w) + 30 for text in kept)
-    refused_h = 74 + sum(block_height(text, 23, 400, text_w) + 30 for text in refused)
-    col_h = max(col_h, refused_h)
+    col_w = (CW - GUTTER) // 2
+    pad = 28
+    bullet = 30
+    text_w = col_w - pad * 2 - bullet
+    gap = 28
+    def stack(items):
+        return sum(para_height(text, BODY, text_w) for text in items) + gap * (len(items) - 1)
 
-    for index, (title, items, marker_kind) in enumerate((("kept as evidence", kept, "tick"), ("refused, and said so", refused, "cross"))):
-        cx = s.margin + index * (col_w + 40)
-        s.round_box(cx, top, col_w, col_h, radius=18, fill=WHITE, outline=INK, width=3)
-        s.caps(cx + 26, top + 24, title, size=19)
-        y = top + 72
-        for text in items:
-            mark(s, cx + 30, y + 4, marker_kind, 23)
-            para(s, cx + 66, y, text, 23, 400, text_w)
-            y += block_height(text, 23, 400, text_w) + 30
+    panel_h = pad * 2 + LABEL.line + 24 + max(stack(kept), stack(refused))
 
-    note(s, top + col_h + 44, "When nothing generalises, the fallback is a verified lookup that answers what it observed and declines everything else.")
+    for index, (title, items, kind) in enumerate(
+        (("kept as evidence", kept, "tick"), ("refused, and said so", refused, "cross"))
+    ):
+        x = MARGIN + index * (col_w + GUTTER)
+        s.rect(x, top, col_w, panel_h, fill=WHITE, stroke=INK, width=2, radius=16)
+        label(s, x + pad, top + pad, title)
+        y = top + pad + LABEL.line + 24
+        for index, text in enumerate(items):
+            if kind == "tick":
+                s.tick(x + pad + 1, y + 3, 1.0)
+            else:
+                s.cross(x + pad + 2, y + 5, 0.9)
+            s.para(x + pad + bullet, y, text, BODY, text_w)
+            y += para_height(text, BODY, text_w) + (gap if index < len(items) - 1 else 0)
+
+    note(s, top + panel_h + 44, "When nothing generalises, the fallback is a verified lookup that answers what it observed and declines everything else.")
     s.save("04-evidence.png")
 
 
@@ -293,54 +319,59 @@ def figure_evidence():
 
 
 def figure_contract():
-    s = Sketch(
-        W,
-        1400,
-        "05 · what to expect",
+    s = Canvas(
+        "05 \u00b7 what to expect",
         ["It asks first.", "It shows its source."],
         "Three promises the product keeps, whatever it has compiled.",
-        seed=53,
     )
-    top = s.content_top
+    top = s.y
+    head = hand(26, 600, INK)
+    demo_w = 640
+    demo_x = MARGIN + 52
+    side_x = demo_x + demo_w + 44
+    side_w = W - MARGIN - side_x
 
-    badge(s, s.margin, top, "1", size=40)
-    s.text(s.margin + 60, top + 16, "It offers. You approve.", hand(30, 700), INK)
-    box_y = top + 72
-    s.round_box(s.margin + 60, box_y, 820, 104, radius=14, fill=WHITE, outline=INK, width=3)
-    s.text(s.margin + 86, box_y + 22, "A compiled program already covers this: palindrome-checker.", hand(23, 500), INK)
-    s.text(s.margin + 86, box_y + 60, "Run it, or answer from scratch?", hand(21, 400), MUTED)
-    tick(s, s.margin + 916, box_y + 40, 1.2)
-    s.text(s.margin + 958, box_y + 44, "run it", hand(23, 500), INK, anchor="lm")
-    cross(s, s.margin + 1092, box_y + 34, 1.1)
-    s.text(s.margin + 1132, box_y + 44, "skip", hand(23, 500), INK, anchor="lm")
-    caption(s, s.margin + 60, box_y + 120, "Typing \u201cyes\u201d works too. A program never answers on its own.", 20)
+    def section(y, number, title, body_text):
+        s.badge(MARGIN, y, number)
+        s.text(MARGIN + 52, y + 17 + head.cap / 2, title, head)
+        s.para(MARGIN + 52, y + 56, body_text, SMALL, 560)
 
-    top2 = box_y + 190
-    badge(s, s.margin, top2, "2", size=40)
-    s.text(s.margin + 60, top2 + 16, "It shows where the answer came from.", hand(30, 700), INK)
-    box_y2 = top2 + 72
-    s.round_box(s.margin + 60, box_y2, 820, 104, radius=14, fill=WHITE, outline=INK, width=3)
-    s.text(s.margin + 86, box_y2 + 22, "No, \u201cabcd\u201d is not a palindrome.", hand(24, 500), INK)
-    s.text(s.margin + 86, box_y2 + 62, "compiled program: palindrome-checker \u00b7 < 1 ms \u00b7 no model call", hand(20, 400), MUTED)
-    s.round_box(s.margin + 910, box_y2, 520, 104, radius=14, fill=PEACH_LIGHT, outline=INK, width=3)
-    s.text(s.margin + 934, box_y2 + 22, "every reply is labelled", hand(21, 500), INK)
-    s.text(s.margin + 934, box_y2 + 60, "with the program that produced it", hand(20, 400), INK_SOFT)
+    # 1
+    y1 = top
+    section(y1, "1", "It offers. You approve.", "A program never answers on its own.")
+    box_y = y1 + 104
+    s.rect(demo_x, box_y, demo_w, 150, fill=WHITE, stroke=INK, width=2, radius=16)
+    s.text(demo_x + 26, box_y + 40, "A compiled program already covers this: palindrome-checker.", hand(19, 500))
+    s.text(demo_x + 26, box_y + 70, "Run it, or answer from scratch?", hand(17, 400, MUTED))
+    s.chip(demo_x + 26, box_y + 96, "run it", hand(17, 500, INK), pad_x=18, height=34)
+    s.chip(demo_x + 132, box_y + 96, "skip", hand(17, 400, INK_SOFT), fill=WHITE, stroke=LINE, pad_x=18, height=34)
+    s.para(side_x, box_y + 10, "Typing \u201cyes\u201d works too. The offer names the program, its score and its recorded task.", SMALL, side_w)
 
-    top3 = box_y2 + 190
-    badge(s, s.margin, top3, "3", size=40)
-    s.text(s.margin + 60, top3 + 16, "Nothing is overwritten.", hand(30, 700), INK)
-    box_y3 = top3 + 76
-    s.round_box(s.margin + 60, box_y3, 420, 132, radius=14, fill=PAPER, outline=INK_SOFT, width=2)
-    s.caps(s.margin + 84, box_y3 + 20, "replaced", size=18, fill=MUTED)
-    s.text(s.margin + 84, box_y3 + 58, "the earlier program", hand(23, 500), MUTED)
-    s.d.line([(s.margin + 84, box_y3 + 68), (s.margin + 400, box_y3 + 68)], fill=MUTED, width=3)
-    s.arrow(s.margin + 500, box_y3 + 66, s.margin + 600, box_y3 + 66, width=3)
-    s.round_box(s.margin + 620, box_y3, 420, 132, radius=14, fill=PEACH_LIGHT, outline=INK, width=3)
-    s.caps(s.margin + 644, box_y3 + 20, "current", size=18)
-    s.text(s.margin + 644, box_y3 + 58, "palindrome-checker", hand(23, 700), INK)
-    s.text(s.margin + 644, box_y3 + 92, "kept as history, never matched", hand(20, 400), INK_SOFT)
-    s.text(s.margin + 1080, box_y3 + 22, "A description in the registry", hand(21, 500), INK)
-    para(s, s.margin + 1080, box_y3 + 60, "is generated from the stored program itself, so it cannot describe something the program does not do.", 20, 400, s.w - s.margin - (s.margin + 1080))
+    # 2
+    y2 = box_y + 150 + 52
+    section(y2, "2", "It shows where the answer came from.", "Every reply is labelled.")
+    box_y2 = y2 + 104
+    s.rect(demo_x, box_y2, demo_w, 132, fill=WHITE, stroke=INK, width=2, radius=16)
+    s.text(demo_x + 26, box_y2 + 42, "No, \u201cabcd\u201d is not a palindrome.", hand(20, 500))
+    s.text(demo_x + 26, box_y2 + 78, "compiled program: palindrome-checker", hand(16, 500, INK_SOFT))
+    s.text(demo_x + 26, box_y2 + 102, "< 1 ms  \u00b7  no model call", hand(16, 400, MUTED))
+    s.para(side_x, box_y2 + 10, "The label is the same one the registry shows, and it is generated from the program rather than written by hand.", SMALL, side_w)
+
+    # 3
+    y3 = box_y2 + 132 + 52
+    section(y3, "3", "Nothing is overwritten.", "A better program supersedes, it does not erase.")
+    box_y3 = y3 + 104
+    old_w, gap = 260, 44
+    s.rect(demo_x, box_y3, old_w, 112, fill=PAPER, stroke=LINE, width=1.5, radius=12)
+    label(s, demo_x + 22, box_y3 + 20, "replaced", LABEL_LIGHT)
+    s.text(demo_x + 22, box_y3 + 66, "the earlier program", hand(18, 500, MUTED))
+    s.line([(demo_x + 22, box_y3 + 76), (demo_x + old_w - 22, box_y3 + 76)], MUTED, 1.5)
+    s.arrow(demo_x + old_w + 6, box_y3 + 56, demo_x + old_w + gap - 6, box_y3 + 56, width=2)
+    s.rect(demo_x + old_w + gap, box_y3, old_w, 112, fill=PEACH_LIGHT, stroke=INK, width=2, radius=12)
+    label(s, demo_x + old_w + gap + 22, box_y3 + 20, "current")
+    s.text(demo_x + old_w + gap + 22, box_y3 + 66, "palindrome-checker", hand(18, 700, INK))
+    s.para(side_x, box_y3 + 8, "History stays in the registry, marked and never matched again. Descriptions are generated from the stored program, so they cannot outlive it.", SMALL, side_w)
+
     s.save("05-what-to-expect.png")
 
 
@@ -350,58 +381,66 @@ def figure_contract():
 
 
 def figure_system():
-    s = Sketch(
-        W,
-        1400,
-        "06 · system",
+    s = Canvas(
+        "06 \u00b7 system",
         ["One process,", "no hidden service."],
         "The browser talks to one Express app, storage is a JSON file, and compiled programs run inside that same process. A reused answer needs no model, no network and no second service.",
-        seed=67,
     )
-    top = s.content_top
+    top = s.y
+    browser_w = 250
+    api_w = 320
+    gap = 110
+    parts_x = MARGIN + browser_w + gap + api_w + gap
+    parts_w = W - MARGIN - parts_x
+    api_x = MARGIN + browser_w + gap
+
     parts = [
-        ("program.js", "compiler and VM \u00b7 search, verify, execute"),
-        ("neural.js", "acceptance head \u00b7 12 units, trained at compile"),
-        ("embeddings.js", "task profiler \u00b7 intent, domain, 256-dim"),
+        ("program.js", "compiler and VM: search, verify, execute"),
+        ("neural.js", "acceptance head: 12 units, trained at compile"),
+        ("embeddings.js", "task profiler: intent, domain, 256-dim"),
     ]
-    part_h, part_gap = 84, 10
-    api_h = len(parts) * part_h + (len(parts) - 1) * part_gap
-    api_x, api_w = 566, 400
-    px, px_w = 1050, 466
+    part_h, part_gap = 76, 9
+    body_h = len(parts) * part_h + (len(parts) - 1) * part_gap
 
-    browser = s.round_box(s.margin, top, 300, api_h, radius=18, fill=WHITE, outline=INK, width=3)
-    s.caps(s.margin + 24, top + 24, "browser", size=20)
-    para(s, s.margin + 24, top + 64, "React and Vite: chat, offer cards, the tool registry, and the integrations page.", 20, 400, 250)
-    caption(s, s.margin + 24, top + api_h - 46, "renders what it is told", 20)
+    s.rect(MARGIN, top, browser_w, body_h, fill=WHITE, stroke=INK, width=2, radius=16)
+    label(s, MARGIN + 24, top + 24, "browser", caps_bold(13, INK, 2.6))
+    s.para(MARGIN + 24, top + 62, "React and Vite: chat, offer cards, the tool registry, and the integrations page.", hand(17, 400, INK_SOFT, line=26), browser_w - 48)
+    s.text(MARGIN + 24, top + body_h - 26 + hand(15, 400).cap, "renders what it is told", hand(15, 400, MUTED))
 
-    s.round_box(api_x, top, api_w, api_h, radius=18, fill=PEACH_LIGHT, outline=INK, width=3)
-    s.caps(api_x + 24, top + 24, "express api", size=20)
-    s.mono_block(api_x + 24, top + 66, "routes/chats\nengine.js pipeline\nroutes/tools\nroutes/stats", size=20, max_width=340)
-
-    s.arrow(s.margin + 318, top + 56, api_x - 16, top + 56, width=3)
-    s.text((s.margin + 318 + api_x) / 2, top + 30, "HTTP /api", hand(20, 400), MUTED, anchor="mm")
-    s.arrow(api_x - 16, top + 96, s.margin + 318, top + 96, width=2, colour=INK_SOFT)
-    s.text((s.margin + 318 + api_x) / 2, top + 122, "JSON", hand(20, 400), MUTED, anchor="mm")
+    s.rect(api_x, top, api_w, body_h, fill=PEACH_LIGHT, stroke=INK, width=2, radius=16)
+    label(s, api_x + 24, top + 24, "express api", caps_bold(13, INK, 2.6))
+    s.mono_block(api_x + 24, top + 62, "routes/chats\nengine.js pipeline\nroutes/tools\nroutes/stats", mono(15, "Regular", INK, 0, 27), api_w - 48)
 
     for index, (name, role) in enumerate(parts):
-        py = top + index * (part_h + part_gap)
-        s.round_box(px, py, px_w, part_h, radius=14, fill=WHITE, outline=INK, width=3)
-        s.text(px + 22, py + 16, name, mono(20, "Bold"), INK)
-        s.text(px + 22, py + 48, role, hand(20, 400), INK_SOFT)
-        s.arrow(api_x + api_w + 6, top + api_h / 2, px - 12, py + part_h / 2, width=2, colour=INK_SOFT)
+        y = top + index * (part_h + part_gap)
+        s.rect(parts_x, y, parts_w, part_h, fill=WHITE, stroke=INK, width=2, radius=12)
+        s.text(parts_x + 22, y + 32, name, mono_bold(16))
+        s.text(parts_x + 22, y + 58, role, hand(16, 400, INK_SOFT))
 
-    lower = top + api_h + 60
-    lower_h = 132
-    s.round_box(s.margin, lower, 660, lower_h, radius=16, fill=WHITE, outline=INK, width=3)
-    s.caps(s.margin + 24, lower + 22, "storage", size=19)
-    s.text(s.margin + 24, lower + 58, "one JSON file: programs, evidence, chats, the log", hand(21, 500), INK)
-    caption(s, s.margin + 24, lower + 96, "a writable directory is chosen at boot", 20)
-    s.arrow(s.margin + 330, lower - 8, s.margin + 330, top + api_h + 8, width=2, colour=INK_SOFT, both=True)
+    mid_y = top + body_h / 2
+    s.arrow(MARGIN + browser_w + 8, mid_y - 12, api_x - 10, mid_y - 12, width=2, head=7)
+    s.arrow(api_x - 10, mid_y + 20, MARGIN + browser_w + 8, mid_y + 20, width=1.6, head=7)
+    mid_label = hand(15, 400, MUTED)
+    s.text((MARGIN + browser_w + api_x) / 2 - mid_label.width("HTTP /api") / 2, mid_y - 24, "HTTP /api", mid_label)
+    s.text((MARGIN + browser_w + api_x) / 2 - mid_label.width("JSON") / 2, mid_y + 44, "JSON", mid_label)
 
-    s.round_box(776, lower, 740, lower_h, radius=16, fill=PAPER, outline=INK_SOFT, width=2)
-    s.caps(800, lower + 22, "model, for general answers only", size=19, fill=INK_SOFT)
-    s.text(800, lower + 58, "Ollama on your machine, or a provider key you add", hand(21, 400), INK_SOFT)
-    caption(s, 800, lower + 96, "reached only when no program matches, and never from a program", 20)
+    for index in range(len(parts)):
+        cy = top + index * (part_h + part_gap) + part_h / 2
+        s.arrow(api_x + api_w + 8, cy, parts_x - 8, cy, width=1.6, head=7)
+
+    lower = top + body_h + 56
+    lower_h = 112
+    store_w = 596
+    s.rect(MARGIN, lower, store_w, lower_h, fill=WHITE, stroke=INK, width=2, radius=16)
+    label(s, MARGIN + 24, lower + 22, "storage", caps_bold(13, INK, 2.6))
+    s.text(MARGIN + 24, lower + 66, "one JSON file: programs, evidence, chats, the log", hand(18, 500))
+    s.text(MARGIN + 24, lower + 92, "a writable directory is chosen at boot", hand(16, 400, MUTED))
+
+    model_x = MARGIN + store_w + 40
+    s.rect(model_x, lower, W - MARGIN - model_x, lower_h, fill=PAPER, stroke=LINE, width=1.5, radius=16)
+    label(s, model_x + 24, lower + 22, "model, for general answers only", LABEL_LIGHT)
+    s.text(model_x + 24, lower + 66, "Ollama on your machine, or a provider key you add", hand(18, 400, INK_SOFT))
+    s.text(model_x + 24, lower + 92, "never reached from inside a compiled program", hand(16, 400, MUTED))
 
     note(s, lower + lower_h + 44, "Compiled programs are the reason the model is optional: reuse is a function call inside this process.")
     s.save("06-system.png")
@@ -413,118 +452,103 @@ def figure_system():
 
 
 def figure_lessons():
-    s = Sketch(
-        W,
-        1500,
-        "07 · what it teaches",
+    s = Canvas(
+        "07 \u00b7 what it teaches",
         ["What a pipeline like this", "actually teaches."],
         "Four findings that generalise past this codebase, and one that tempers them.",
-        seed=79,
     )
-    top = s.content_top
+    top = s.y
     lessons = [
-        (
-            "Repetition is free supervision",
-            "Nobody labels anything. A user who asks the same task three times has already shown where the task family is, and every repetition arrives with an answer attached.",
-        ),
-        (
-            "Verification is the product",
-            "Generation is cheap now; deciding what is true is not. Search plus hard evidence rules produced correct programs for cases the model itself had answered wrongly.",
-        ),
-        (
-            "Separate wording from computation",
-            "A reply is evidence about phrasing, never about arithmetic. Treat a sentence as the answer and a rule will eventually assert a number that nothing derived.",
-        ),
-        (
-            "Measure generalisation, don't assume it",
-            "Reproducing the demonstrations says almost nothing. Leave-one-out, generated in-domain inputs and honest decline counts are what show whether a program can be trusted.",
-        ),
+        ("Repetition is free supervision", "Nobody labels anything. A user who asks the same task three times has already shown where the task family is, and every repetition arrives with an answer attached."),
+        ("Verification is the product", "Generation is cheap now; deciding what is true is not. Search plus hard evidence rules produced correct programs for cases the model itself had answered wrongly."),
+        ("Separate wording from computation", "A reply is evidence about phrasing, never about arithmetic. Treat a sentence as the answer and a rule will eventually assert a number that nothing derived."),
+        ("Measure generalisation, don't assume it", "Reproducing the demonstrations says almost nothing. Leave-one-out, generated in-domain inputs and honest decline counts are what show whether a program can be trusted."),
     ]
-    card_w = (W - s.margin * 2 - 34) / 2
-    card_h = 92 + max(block_height(body, 22, 400, card_w - 52) for _, body in lessons) + 34
-    for index, (title, body) in enumerate(lessons):
-        cx = s.margin + (index % 2) * (card_w + 34)
-        cy = top + (index // 2) * (card_h + 34)
-        s.round_box(cx, cy, card_w, card_h, radius=18, fill=WHITE, outline=INK, width=3)
-        s.text(cx + 26, cy + 22, f"{index + 1:02d}", mono(22, "Bold"), INK_SOFT)
-        s.text(cx + 68, cy + 16, title, hand(28, 700), INK)
-        para(s, cx + 26, cy + 80, body, 22, 400, card_w - 52)
+    card_w = (CW - 32) // 2
+    pad = 28
+    text_w = card_w - pad * 2
+    body_h = max(para_height(text, BODY, text_w) for _, text in lessons)
+    card_h = pad + 32 + 16 + body_h + pad
+
+    for index, (title, text) in enumerate(lessons):
+        x = MARGIN + (index % 2) * (card_w + 32)
+        y = top + (index // 2) * (card_h + 32)
+        s.rect(x, y, card_w, card_h, fill=WHITE, stroke=INK, width=2, radius=16)
+        s.text(x + pad, y + pad + 18, f"{index + 1:02d}", mono_bold(15, MUTED))
+        s.text(x + pad + 34, y + pad + 20, title, hand(21, 600))
+        s.para(x + pad, y + pad + 58, text, BODY, text_w)
 
     note(
         s,
-        top + 2 * card_h + 34 + 44,
+        top + 2 * card_h + 32 + 44,
         "The tempering one: a tiny local model is a good source of phrasing and a poor oracle. That difference is the whole design.",
-        size=24,
     )
     s.save("07-what-it-teaches.png")
 
 
+# ---------------------------------------------------------------------------
+# 08 · The compiler
+# ---------------------------------------------------------------------------
+
+
 def figure_compiler():
-    s = Sketch(
-        W,
-        1700,
-        "08 · the compiler",
+    s = Canvas(
+        "08 \u00b7 the compiler",
         ["Compile by search,", "not by prompting."],
         "The recorded answers are targets, never instructions. Candidate programs are enumerated from the words in the requests, executed against every demonstration, and priced.",
-        seed=97,
     )
-    top = s.content_top
-    s.caps(s.margin, top - 4, "three of the candidates the search considered, in the order it ranks them", size=19)
+    top = s.y
+    label(s, MARGIN, top, "three of the candidates the search considered, in the order it ranks them")
 
     rows = [
-        (
-            "read   the word after \u201creverse\u201d\nstep   reverse it\nemit   fill in the recorded wording",
-            "explains all 4", "cost 6", "wins", True,
-        ),
-        (
-            "read   the word after \u201creverse\u201d\nstep   nothing\nemit   look the answer up in a table",
-            "explains all 4", "cost 34", "priced out", False,
-        ),
-        (
-            "read   the whole request\nstep   nothing\nemit   repeat one recorded sentence",
-            "explains none", "cost 2", "discarded", False,
-        ),
+        ("read   the word after \u201creverse\u201d\nstep   reverse it\nemit   fill in the recorded wording", "explains all 4", "cost 6", "wins", True),
+        ("read   the word after \u201creverse\u201d\nstep   nothing\nemit   look the answer up in a table", "explains all 4", "cost 34", "priced out", False),
+        ("read   the whole request\nstep   nothing\nemit   repeat one recorded sentence", "explains none", "cost 2", "discarded", False),
     ]
-    prog_w, row_h, row_gap = 1000, 132, 20
+    prog_w = 900
+    row_h, row_gap = 122, 18
     y = top + 34
-    for index, (body, verdict, cost, comment, wins) in enumerate(rows):
-        s.round_box(
-            s.margin, y, prog_w, row_h, radius=16,
-            fill=PEACH_LIGHT if wins else WHITE, outline=INK, width=3 if wins else 2,
-        )
-        s.mono_block(s.margin + 26, y + 22, body, size=20, max_width=prog_w - 52)
-        vx = s.margin + prog_w + 44
+    for body, verdict, cost, comment, wins in rows:
+        s.rect(MARGIN, y, prog_w, row_h, fill=PEACH_LIGHT if wins else WHITE, stroke=INK, width=2 if wins else 1.5, radius=14)
+        s.mono_block(MARGIN + 26, y + 22, body, mono(15, "Regular", INK, 0, 27), prog_w - 52)
+        vx = MARGIN + prog_w + 40
         if wins:
-            tick(s, vx, y + 34, 1.1)
+            s.tick(vx, y + 30, 1.1)
         else:
-            cross(s, vx, y + 24, 0.9)
-        s.text(vx + 40, y + 32, verdict, hand(23, 500), INK if wins else MUTED)
-        s.text(vx + 40, y + 68, cost, mono(19, "Bold"), INK_SOFT)
-        s.text(vx + 40, y + 100, comment, hand(20, 700 if wins else 500), INK if wins else MUTED)
+            s.cross(vx, y + 24, 0.9)
+        s.text(vx + 30, y + 38, verdict, hand(19, 500, INK if wins else MUTED))
+        s.text(vx + 30, y + 64, cost, mono_bold(14, INK_SOFT))
+        s.text(vx + 30, y + 94, comment, hand(17, 700 if wins else 500, INK if wins else MUTED))
         y += row_h + row_gap
 
-    caption(s, s.margin, y + 2, "A lookup has to beat a genuine computation on price, and usually cannot. 12,000 candidates are enumerated by default, and there is no sampling anywhere in the path.", 21, width=s.w - s.margin * 2)
+    cap_y = y + 4
+    cap_text = "A lookup has to beat a genuine computation on price, and usually cannot. 12,000 candidates are enumerated by default, and there is no sampling anywhere in the path."
+    cap_bottom = s.para(MARGIN, cap_y, cap_text, CAPTION, CW)
 
-    gate_y = y + 2 + block_height("A lookup has to beat a genuine computation on price, and usually cannot. 12,000 candidates are enumerated by default, and there is no sampling anywhere in the path.", 21, 400, s.w - s.margin * 2) + 46
     rules = [
         "It explains every demonstration exactly, either reproduced or recognised as a variant of the same answer.",
         "It derives every number it states, from the request, the subject it read, or the value it computed.",
         "It declines inputs it cannot read instead of answering them with a lucky branch.",
     ]
-    rule_w = s.w - s.margin * 2 - 104
-    gate_h = 74 + sum(block_height(rule, 22, 400, rule_w) + 30 for rule in rules)
-    s.round_box(s.margin, gate_y, s.w - s.margin * 2, gate_h, radius=18, fill=WHITE, outline=INK, width=3)
-    s.caps(s.margin + 26, gate_y + 24, "before a candidate is priced, it has to survive three rules", size=19)
-    ry = gate_y + 72
-    for rule in rules:
-        mark(s, s.margin + 30, ry + 4, "tick", 23)
-        para(s, s.margin + 66, ry, rule, 22, 400, rule_w)
-        ry += block_height(rule, 22, 400, rule_w) + 30
+    gate_y = cap_bottom + 44
+    pad = 28
+    bullet = 32
+    rule_w = CW - pad * 2 - bullet
+    gate_h = pad * 2 + LABEL.line + 26 + sum(para_height(rule, BODY, rule_w) for rule in rules) + 26 * (len(rules) - 1)
+    s.rect(MARGIN, gate_y, CW, gate_h, fill=WHITE, stroke=INK, width=2, radius=16)
+    label(s, MARGIN + pad, gate_y + pad, "before a candidate is priced, it has to survive three rules")
+    ry = gate_y + pad + LABEL.line + 26
+    for index, rule in enumerate(rules):
+        s.tick(MARGIN + pad + 1, ry + 3, 1.0)
+        s.para(MARGIN + pad + bullet, ry, rule, BODY, rule_w)
+        ry += para_height(rule, BODY, rule_w) + (26 if index < len(rules) - 1 else 0)
 
     note(s, gate_y + gate_h + 44, "Nothing a model wrote is executed: the search produces the program, and the evidence decides whether it is stored.")
     s.save("08-the-compiler.png")
 
 
+# ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
 FIGURES = {
     "01-why.png": figure_why,
     "02-how-it-works.png": figure_pipeline,
@@ -538,7 +562,7 @@ FIGURES = {
 
 
 def main():
-    wanted = sys.argv[1:]
+    wanted = [arg for arg in sys.argv[1:] if not arg.startswith("-")]
     for name, builder in FIGURES.items():
         if wanted and name not in wanted:
             continue

@@ -3,6 +3,7 @@ import { nanoid } from "nanoid";
 import { identity } from "../middleware/auth.js";
 import { db } from "../db.js";
 import { processTask, resolveOffer, msg } from "../engine.js";
+import { ensureSampleChat } from "../sample.js";
 import { decryptSecret } from "../secrets.js";
 
 const router = Router();
@@ -21,11 +22,24 @@ async function cleanupGuestChats() {
   if (stale.length) {
     const staleIds = new Set(stale.map((c) => c.id));
     db.data.chats = db.data.chats.filter((c) => !staleIds.has(c.id));
+    // A guest id belongs to one browser session, so a guest with no chats left
+    // is not coming back to look at a registry. What they cleared can go with
+    // them instead of accumulating in the store forever.
+    const stillHere = new Set(db.data.chats.filter((chat) => chat.guest).map((chat) => chat.userId));
+    db.data.hidden = (db.data.hidden || []).filter((row) => !row.ownerId.startsWith("guest:") || stillHere.has(row.ownerId));
   }
 }
 
 router.get("/", async (req, res) => {
   await db.read();
+  // Every visitor gets one prepared conversation, pinned above their own
+  // history, so the project can be understood before anything has been
+  // compiled and while the model backend is unreachable. It is created once per
+  // owner and is a normal chat from then on.
+  const seeded = await ensureSampleChat(req.ownerId, req.isGuest);
+  if (seeded) {
+    await db.write();
+  }
   const chats = db.data.chats
     .filter((c) => c.userId === req.ownerId)
     .sort((a, b) => b.updatedAt - a.updatedAt)
@@ -187,7 +201,12 @@ function trimChat(chat) {
   if (chat.messages.length > MAX_MESSAGES) chat.messages = chat.messages.slice(chat.messages.length - MAX_MESSAGES);
 }
 function pruneChats(ownerId) {
-  const mine = db.data.chats.filter((c) => c.userId === ownerId).sort((a, b) => a.updatedAt - b.updatedAt);
+  // The sample is a fixture, not history: it is never the row that gets pushed
+  // out to make room, or a busy owner would lose it and get a fresh copy on the
+  // next load.
+  const mine = db.data.chats
+    .filter((c) => c.userId === ownerId && !c.sample)
+    .sort((a, b) => a.updatedAt - b.updatedAt);
   while (mine.length > MAX_CHATS) {
     const oldest = mine.shift();
     db.data.chats = db.data.chats.filter((c) => c.id !== oldest.id);

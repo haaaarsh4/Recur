@@ -44,10 +44,47 @@ const defaultData = {
   tools: [],   // compiled programs: { id, name, specification, program, tests, metrics, neural, executions, totalLatencyMs }
   pending: [], // { id, text, profile, vector, output, createdAt }
   log: [],     // { id, type: 'hit'|'general', toolId?, toolName?, latencyMs, ts }
+  // Programs a visitor has cleared from their own view of the registry. The
+  // registry is one shared library that anybody can compile into, so clearing it
+  // cannot delete the artifacts other people are already using: it hides them
+  // for the person who asked, and nothing else.
+  hidden: [],  // { ownerId, toolId, ts }
 };
 
 const adapter = new JSONFile(file);
 const db = new Low(adapter, defaultData);
+
+// One process, one store.
+//
+// lowdb's read() replaces the whole store object with a freshly parsed copy, so
+// a request that read the file, changed something and was about to save it could
+// have its work thrown away by any other request that read the file in between:
+// the change landed on an object that was no longer the store, and the save
+// wrote the copy that had never seen it. The symptom was concrete and easy to
+// hit, because a first visit fires four requests at once: the sample chat was
+// created, the store was replaced underneath it, and the visitor got an empty
+// chat list on the one page that has to prove the project works.
+//
+// So the file is loaded once, the in-memory store is the store, and every read
+// after that returns immediately. The file is still the durable record, and
+// saves are queued so two of them can never race over the same temporary file.
+const loadOnce = db.read.bind(db);
+let loaded = false;
+db.read = async () => {
+  if (loaded) return;
+  await loadOnce();
+  loaded = true;
+};
+const saveQueued = db.write.bind(db);
+let saving = Promise.resolve();
+db.write = () => {
+  const run = saving.then(saveQueued, saveQueued);
+  saving = run.then(
+    () => undefined,
+    () => undefined
+  );
+  return run;
+};
 
 // A legacy contract holds no program, so there is no computation to describe and
 // its line has to be honest about what the saved request actually was. It is

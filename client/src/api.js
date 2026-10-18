@@ -1,9 +1,30 @@
 const BASE = "/api";
 
+// One guest id per browser session, generated here rather than by the server.
+// A visit fires several requests before the server has set its guest cookie, and
+// without this each one would be answered as a different guest, so the browser
+// could hold an identity that never owned the sample chat it was already shown.
+// The server still owns the cookie and prefers it; this only covers the first
+// moments of a visit, and it lives in sessionStorage, which ends with the
+// session exactly like the cookie does.
+function sessionGuestId() {
+  try {
+    let id = sessionStorage.getItem("recur:guest");
+    if (!id) {
+      id = (crypto.randomUUID?.() || `${Date.now().toString(36)}${Math.random().toString(36).slice(2)}`).replace(/-/g, "");
+      sessionStorage.setItem("recur:guest", id);
+    }
+    return id;
+  } catch (e) {
+    return "";
+  }
+}
+
 async function request(path, opts = {}) {
+  const guest = sessionGuestId();
   const res = await fetch(BASE + path, {
     credentials: "include",
-    headers: { "Content-Type": "application/json", ...(opts.headers || {}) },
+    headers: { "Content-Type": "application/json", ...(guest ? { "x-recur-guest": guest } : {}), ...(opts.headers || {}) },
     ...opts,
     body: opts.body ? JSON.stringify(opts.body) : undefined,
   });
@@ -32,9 +53,12 @@ export const api = {
   resolveOffer: (chatId, messageId, action, tier) =>
     request(`/chats/${chatId}/offers/${messageId}/resolve`, { method: "POST", body: { action, tier } }),
 
+  // Clearing the shared registry is a personal view change: these hide programs
+  // for this browser and leave everybody else's registry untouched.
   listTools: () => request("/tools"),
-  resetTools: () => request("/tools", { method: "DELETE" }),
-  deleteTool: (id) => request(`/tools/${encodeURIComponent(id)}`, { method: "DELETE" }),
+  hideAllTools: () => request("/tools", { method: "DELETE" }),
+  hideTool: (id) => request(`/tools/${encodeURIComponent(id)}`, { method: "DELETE" }),
+  restoreTools: () => request("/tools/hidden", { method: "DELETE" }),
   getStats: () => request("/stats"),
 
   getIntegration: () => request("/integrations"),

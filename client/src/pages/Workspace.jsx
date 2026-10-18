@@ -34,6 +34,7 @@ export default function Workspace() {
   const [chatFading, setChatFading] = useState(false);
   const fadeRef = useRef(0);
   const notifRef = useRef(null);
+  const autoOpenedRef = useRef(false);
 
   useEffect(() => {
     function onDoc(e) { if (notifRef.current && !notifRef.current.contains(e.target)) setNotifOpen(false); }
@@ -65,7 +66,7 @@ export default function Workspace() {
   // for history (a program a later compilation replaced, an old contract that
   // holds nothing executable) stay visible in the registry but are not doing any
   // work, so counting them here would contradict the page they link to.
-  const liveTools = tools.filter((tool) => tool.program && tool.status !== "superseded").length;
+  const liveTools = tools.filter((tool) => !tool.hiddenForYou && tool.program && tool.status !== "superseded").length;
 
   useEffect(() => {
     if (loading) return;
@@ -73,6 +74,19 @@ export default function Workspace() {
     refreshTools();
     refreshStats();
   }, [loading, user, refreshChats, refreshTools, refreshStats]);
+
+  // A first-time visitor lands in the sample conversation, so the project can be
+  // understood before they type anything and while the model backend may be
+  // unreachable. It happens once per browser and never again: after that the
+  // chat stays pinned, and the visitor's own chats are the default.
+  useEffect(() => {
+    if (loading || autoOpenedRef.current || activeChat || sampleAlreadySeen()) return;
+    const sample = chats.find((chat) => chat.sample);
+    if (!sample) return;
+    autoOpenedRef.current = true;
+    markSampleSeen();
+    openChat(sample.id, "pinned");
+  }, [loading, chats, activeChat]);
 
   // Chat switching uses one single opacity fade: the current view fades out,
   // content swaps while fully transparent, then the new view fades in. Because
@@ -96,7 +110,14 @@ export default function Workspace() {
     setChatFading(false);
   }
   function openChat(id, source = "history") {
-    if (activeChat?.id === id && activeSource === source && !chatFading) return;
+    // A chat that is already open still has to bring its view back: clicking the
+    // row while the registry or the integrations page is on screen should return
+    // to the conversation instead of doing nothing.
+    if (activeChat?.id === id && activeSource === source && !chatFading) {
+      setView("chat");
+      setMobileNavOpen(false);
+      return;
+    }
     swapChat(() => api.getChat(id), source).catch((e) => {
       if (e) setError(e.message || "Could not open that chat.");
       setChatFading(false);
@@ -164,20 +185,25 @@ export default function Workspace() {
     }
   }
 
-  // Both of these refresh what the registry shows, and both let the panel see a
-  // failure: a delete that silently does nothing is worse than one that says why
-  // it did nothing.
-  async function resetLibrary() {
-    const result = await api.resetTools();
+  // Clearing the registry is a view change rather than a deletion: these hide
+  // programs for this visitor and leave the shared library alone. All three hit
+  // the tools list again, and all three let the panel see a failure: a control
+  // that silently does nothing is worse than one that says why it did nothing.
+  async function hideAllTools() {
+    const result = await api.hideAllTools();
     refreshTools();
-    refreshStats();
     return result;
   }
 
-  async function deleteTool(id) {
-    const result = await api.deleteTool(id);
+  async function hideTool(id) {
+    const result = await api.hideTool(id);
     refreshTools();
-    refreshStats();
+    return result;
+  }
+
+  async function restoreTools() {
+    const result = await api.restoreTools();
+    refreshTools();
     return result;
   }
 
@@ -249,7 +275,7 @@ export default function Workspace() {
             onResolveOffer={resolveOffer}
           />
         ) : view === "tools" ? (
-          <ToolsPanel tools={tools} stats={stats} onReset={resetLibrary} onDeleteTool={deleteTool} />
+          <ToolsPanel tools={tools} stats={stats} onHideAll={hideAllTools} onHideTool={hideTool} onRestoreTools={restoreTools} />
         ) : view === "home" ? (
           <HomeView
             user={user}
@@ -270,7 +296,25 @@ export default function Workspace() {
 }
 
 const FADE_OUT_MS = 180;
+const SAMPLE_SEEN_KEY = "recur:sample-seen";
 
 function wait(ms) {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
+function sampleAlreadySeen() {
+  try {
+    return localStorage.getItem(SAMPLE_SEEN_KEY) === "1";
+  } catch (e) {
+    return false;
+  }
+}
+
+function markSampleSeen() {
+  try {
+    localStorage.setItem(SAMPLE_SEEN_KEY, "1");
+  } catch (e) {
+    // Storage can be unavailable in private modes; the sample then simply opens
+    // on each visit, which is harmless.
+  }
 }

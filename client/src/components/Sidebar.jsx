@@ -43,8 +43,18 @@ export default function Sidebar({
     return chats.filter((c) => (c.title || "").toLowerCase().includes(q));
   }, [chats, query]);
 
-  const groups = useMemo(() => groupByDate(filtered), [filtered]);
-  const pinnedChats = useMemo(() => chats.filter((chat) => pinnedIds.has(chat.id)), [chats, pinnedIds]);
+  // A chat can be pinned two ways: by this browser (localStorage, as before) or
+  // by the server, which is how the sample conversation is pinned for every
+  // visitor on every device. A pinned chat lives in the pinned section only, so
+  // it is not listed twice.
+  const pinnedChats = useMemo(
+    () => chats.filter((chat) => chat.pinned || pinnedIds.has(chat.id)),
+    [chats, pinnedIds]
+  );
+  const groups = useMemo(
+    () => groupByDate(filtered.filter((chat) => !chat.pinned && !pinnedIds.has(chat.id))),
+    [filtered, pinnedIds]
+  );
 
   function togglePinned(chatId) {
     const next = new Set(pinnedIds);
@@ -130,6 +140,18 @@ export default function Sidebar({
 }
 
 function ChatRow({ chat, active, source, pinned, onSelectChat, onTogglePinned, onDeleteChat }) {
+  // The sample chat is a fixture, so it carries no pin or delete controls:
+  // unpinning or deleting it would only reappear on the next load, and a control
+  // that does not do what it says is worse than no control. Its title already
+  // says what it is.
+  if (chat.sample) {
+    return (
+      <div className={"chat-item sample-chat" + (active ? " active" : "")} onClick={() => onSelectChat(chat.id, source)}>
+        <MessageCircle className="chat-item-icon" />
+        <span className="title">{chat.title || "Sample chat"}</span>
+      </div>
+    );
+  }
   return (
     <div className={"chat-item" + (active ? " active" : "")} onClick={() => onSelectChat(chat.id, source)}>
       <MessageCircle className="chat-item-icon" />

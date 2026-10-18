@@ -2,7 +2,7 @@ import React, { useState } from "react";
 import { Puzzle, X } from "lucide-react";
 import { formatMs } from "../format.js";
 
-export default function ToolsPanel({ tools, stats, onReset, onDeleteTool }) {
+export default function ToolsPanel({ tools, stats, onHideAll, onHideTool, onRestoreTools }) {
   const [openId, setOpenId] = useState(null);
   const [confirming, setConfirming] = useState(false);
   // Which single row is waiting for confirmation, so a delete asks once and the
@@ -26,15 +26,20 @@ export default function ToolsPanel({ tools, stats, onReset, onDeleteTool }) {
       setBusy(false);
     }
   }
+  // The registry is one library shared by everyone using this build, so what a
+  // visitor clears is only cleared for them: the programs stay here and keep
+  // answering for everybody else, and the rows are one click from coming back.
+  const visible = tools.filter((tool) => !tool.hiddenForYou);
+  const hidden = tools.filter((tool) => tool.hiddenForYou);
   // Programs that are still usable. A program a later compilation replaced stays
   // in the list as history, but it is not one of the programs doing the work.
-  const active = tools.filter((tool) => tool.program && tool.status !== "superseded");
+  const active = visible.filter((tool) => tool.program && tool.status !== "superseded");
 
   return (
     <section className="tools-view">
       <div className="tv-inner">
         <h2>Tool registry</h2>
-        <p className="sub">Every compiled program, what it computes, the evidence it was compiled from, and how it behaves when it cannot answer.</p>
+        <p className="sub">Every compiled program, shared by everyone using this build: what it computes, the evidence it was compiled from, and how it behaves when it cannot answer. Clearing a row hides it for you and leaves it in the registry for everyone else.</p>
         <div className="tv-stats">
           <div><span className="n">{active.length}</span>program{active.length === 1 ? "" : "s"} compiled</div>
           <div><span className="n">{stats?.hits ?? 0}</span>local executions</div>
@@ -42,8 +47,14 @@ export default function ToolsPanel({ tools, stats, onReset, onDeleteTool }) {
           <div><span className="n">{stats?.avgGeneralLatencyMs != null ? formatMs(stats.avgGeneralLatencyMs) : "n/a"}</span>avg model latency</div>
         </div>
         <div className="tool-list">
-          {tools.length === 0 && <div className="empty">No programs compiled yet. Chat a bit and once Recur notices the same task a few times, it will ask whether to compile one from your confirmed answers.</div>}
-          {[...tools].sort((a, b) => statusRank(a) - statusRank(b) || (b.executions || 0) - (a.executions || 0)).map((tool) => {
+          {visible.length === 0 && (
+            <div className="empty">
+              {hidden.length
+                ? "Every program in the shared registry is hidden for you. Show them again below whenever you want."
+                : "No programs compiled yet. Chat a bit and once Recur notices the same task a few times, it will ask whether to compile one from your confirmed answers."}
+            </div>
+          )}
+          {[...visible].sort((a, b) => statusRank(a) - statusRank(b) || (b.executions || 0) - (a.executions || 0)).map((tool) => {
             const executions = tool.executions || 0;
             const average = executions ? (tool.totalLatencyMs || 0) / executions : 0;
             const open = openId === tool.id;
@@ -65,8 +76,8 @@ export default function ToolsPanel({ tools, stats, onReset, onDeleteTool }) {
                     className="tool-row-delete"
                     type="button"
                     disabled={busy}
-                    aria-label={`Delete ${tool.name}`}
-                    title={`Delete ${tool.name}`}
+                    aria-label={`Hide ${tool.name} from your view`}
+                    title={`Hide ${tool.name} from your view`}
                     onClick={() => { setConfirmingId(awaitingDelete ? null : tool.id); setError(""); }}
                   >
                     <X />
@@ -74,17 +85,17 @@ export default function ToolsPanel({ tools, stats, onReset, onDeleteTool }) {
                 </div>
                 {awaitingDelete && (
                   <div className="confirm-row row-confirm">
-                    <span>Delete {tool.name} and its stats?</span>
+                    <span>Hide {tool.name} from your view? It stays in the registry for everyone else.</span>
                     <button className="cancel-btn" type="button" disabled={busy} onClick={() => setConfirmingId(null)}>Cancel</button>
                     <button
                       className="danger-btn"
                       type="button"
                       disabled={busy}
                       onClick={async () => {
-                        if (await runDeletion(() => onDeleteTool(tool.id || tool.name))) setConfirmingId(null);
+                        if (await runDeletion(() => onHideTool(tool.id || tool.name))) setConfirmingId(null);
                       }}
                     >
-                      {busy ? "Deleting..." : "Delete"}
+                      {busy ? "Hiding..." : "Hide"}
                     </button>
                   </div>
                 )}
@@ -94,26 +105,34 @@ export default function ToolsPanel({ tools, stats, onReset, onDeleteTool }) {
           })}
         </div>
         {error && <div className="tv-error">{error}</div>}
+        {hidden.length > 0 && (
+          <div className="tv-hidden">
+            <span>
+              {hidden.length} program{hidden.length === 1 ? "" : "s"} hidden from your view. They are still in the shared registry and still answer for everyone else.
+            </span>
+            <button type="button" disabled={busy} onClick={() => runDeletion(onRestoreTools)}>Show them again</button>
+          </div>
+        )}
         {/* The question takes the place of the button that asked it, so there is
             one control in one place instead of two stacked rows. */}
         <div className="tv-footer">
           {confirming ? (
             <div className="confirm-row">
-              <span>Delete every compiled program and its stats?</span>
+              <span>Hide every program from your view? Nothing is deleted, and everyone else keeps the registry as it is.</span>
               <button className="cancel-btn" type="button" disabled={busy} onClick={() => setConfirming(false)}>Cancel</button>
               <button
                 className="danger-btn"
                 type="button"
                 disabled={busy}
                 onClick={async () => {
-                  if (await runDeletion(onReset)) setConfirming(false);
+                  if (await runDeletion(onHideAll)) setConfirming(false);
                 }}
               >
-                {busy ? "Deleting..." : "Delete everything"}
+                {busy ? "Hiding..." : "Hide everything"}
               </button>
             </div>
           ) : (
-            <button type="button" disabled={busy} onClick={() => { setConfirming(true); setConfirmingId(null); setError(""); }}>Clear shared tool library</button>
+            <button type="button" disabled={busy || visible.length === 0} onClick={() => { setConfirming(true); setConfirmingId(null); setError(""); }}>Clear this registry for me</button>
           )}
         </div>
       </div>

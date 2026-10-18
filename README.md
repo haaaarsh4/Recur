@@ -12,6 +12,8 @@ Ask it the same kind of question a few times and it will notice, ask permission 
 
 The interesting part of the project is not the chat interface. It is the pipeline behind it: how a repeated request becomes a specification, how noisy model answers are turned into evidence, and how the system decides what that evidence is allowed to conclude.
 
+A first visit opens one prepared conversation, pinned at the top of the sidebar and labelled as a sample: two palindrome questions answered by the model, a third one compiled into a reusable program and answered by that program locally, and a fourth one left on Recur's own offer, so the next click is the visitor's. It is a normal chat, and everyone who opens this app gets their own copy of it, which is how the project can be understood on a machine where no model is reachable.
+
 ---
 
 ## 1. The problem: a model that re-solves the same thing forever
@@ -20,7 +22,7 @@ Chatbots are stateless problem solvers with a memory of text attached. Every req
 
 - **It costs the same every time.** Nothing about the second pass benefits from the first.
 - **It takes seconds, every time.** In this repository's own measurements a general answer averages around 3.9 seconds, and the fastest tier still spends a full model call.
-- **It drifts.** Ask the same thing three ways and you get three answers with three different wordings, and sometimes three different conclusions. One of the palindrome replies captured by this project claims a false palindrome, and another answers about a different word than the one requested. Both are recorded in the screenshots and the tests.
+- **It drifts.** Ask the same thing three ways and you get three answers with three different wordings, and sometimes three different conclusions. One of the palindrome replies captured by this project claims a false palindrome, and another answers about a different word than the one requested. Both are recorded in the registry and the tests.
 - **It cannot accumulate work.** There is no artifact at the end. The effort spent on yesterday's task is gone.
 
 That last point is the real one. A system that cannot accumulate anything cannot get better at your work; it can only get better at talking about it.
@@ -184,6 +186,7 @@ These are real limitations, listed because pretending otherwise would contradict
 | A verified lookup as the only fallback | never guess, always be able to decline | it repeats observed answers verbatim, including bad ones |
 | A 12-unit acceptance head instead of a model | microseconds, no network, no dependency | weak with few examples; used as a prior, never as an authority |
 | Offer every reuse instead of auto-running | the user keeps the decision, and reuse stays visible | one click per reuse |
+| One shared registry, cleared per visitor | a program anyone compiled is a program everyone can be offered, and clearing a list is not a reason to delete somebody else's artifact | hidden rows still have to be listed to be restorable, and a cleared program is not offered to the visitor who cleared it |
 | Registry copy generated from the artifact | the description cannot outlive the thing it describes | copy is plain and mechanical rather than marketing |
 | Legacy and superseded artifacts stay visible but inert | history is evidence too | the registry shows rows that cannot run |
 
@@ -201,6 +204,7 @@ server/src/
   app.js         Express app, static hosting, health check, Vercel path normalisation
   index.js       standalone entry that listens once the database is ready
   engine.js      the pipeline: profiling, clustering, offers, compilation, reuse
+  sample.js      the prepared first conversation every visitor gets a copy of
   program.js     the compiler, the IR, the VM, verification, and the registry copy
   neural.js      the acceptance head: hashed features, tiny network, sparse execution
   embeddings.js  task profiling and hybrid similarity
@@ -213,7 +217,7 @@ docs/figures/    the figures in this document, plus the script that draws them
 
 ## 14. API surface
 
-All endpoints live under `/api`. The registry is intentionally public, because the numbers it shows are the point.
+All endpoints live under `/api`. The registry is intentionally public, because the numbers it shows are the point: it is one library, shared by everyone using the build, and a program anybody compiled is a program everybody can be offered. Clearing it is personal: the rows are hidden for the visitor who asked, they stay in the store and keep answering for everyone else, and a hidden program is not offered to the visitor who hid it.
 
 | Route | Methods | Purpose |
 | --- | --- | --- |
@@ -221,8 +225,9 @@ All endpoints live under `/api`. The registry is intentionally public, because t
 | `/api/chats/:id/messages` | POST | run the pipeline for one request |
 | `/api/chats/:id/retry` | POST | answer the last request again |
 | `/api/chats/:chatId/offers/:messageId/resolve` | POST | accept or decline an offer (`use`, `create`, `general`, `clarify`) |
-| `/api/tools` | GET, DELETE | the registry; DELETE clears it |
-| `/api/tools/:id` | DELETE | delete one program and its recorded runs |
+| `/api/tools` | GET, DELETE | the shared registry; DELETE hides every program from this visitor |
+| `/api/tools/:id` | DELETE | hide one program from this visitor |
+| `/api/tools/hidden` | DELETE | show the hidden programs again |
 | `/api/stats` | GET | reuse rate, executions, latencies |
 | `/api/integrations`, `/api/integrations/test`, `/api/integrations/active` | GET, PUT, POST, DELETE | provider keys, encrypted at rest |
 | `/api/auth/register`, `/login`, `/logout`, `/me`, `/google`, `/github` | POST, GET | accounts, guest sessions, optional OAuth |
@@ -240,7 +245,7 @@ npm --prefix server run dev        # API on http://localhost:8787
 npm --prefix client run dev        # app on http://localhost:5173
 ```
 
-Then ask the same kind of question three times. On the third, Recur will offer to compile the pattern; accept it, and the fourth request is a program run instead of a model call. `npm test` runs the backend suite (36 tests) covering the evidence rules, the compiler, the acceptance head, the pipeline, and the registry API.
+The sample conversation is there whether or not a model is, and it is the fastest way to see the whole loop: one request in it was answered by a compiled program with no model call, and the request after that is waiting on Recur's offer, so accepting it is the first thing a visitor can do. Any other family behaves the same way: ask the same kind of question three times and the third one is offered a compilation instead of an answer, and once a program covers a request it is offered before it is used. `npm test` runs the backend suite (61 tests) covering the evidence rules, the compiler, the acceptance head, the pipeline, the sample chat, the registry API, the OAuth callbacks, and the messages the model backend produces when it is unreachable.
 
 Configuration is environment only, in `server/.env`: `PORT`, `CLIENT_ORIGIN`, `JWT_SECRET`, `INTEGRATION_ENCRYPTION_KEY`, `OLLAMA_BASE_URL`, `MODEL_QUICK` / `MODEL_DEFAULT` / `MODEL_COMPLEX`, and `PROGRAM_SEARCH_BUDGET` to move the compiler's search budget. Provider keys are never environment variables: they are added on the Integrations page, encrypted with AES-256-GCM, and selected per use.
 
