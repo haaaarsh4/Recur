@@ -59,7 +59,7 @@ svg { width: 17px; height: 17px; flex: none; fill: none; stroke: currentColor; s
 .stat-pill b { color: var(--text); font: 500 11px var(--font); }
 .banner { z-index: 3; display: flex; align-items: center; gap: 8px; padding: 11.5px 18px; color: #e37a80; border-bottom: 1px solid rgba(227,122,128,.25); background: rgba(227,122,128,.1); font-size: 12px; }
 
-.sidebar { z-index: 4; display: flex; width: 322px; flex: none; flex-direction: column; gap: 16px; padding: 14px 13px 14px; overflow: hidden; background: var(--sidebar); border-right: 1px solid #252525; }
+.sidebar { z-index: 4; display: flex; width: 322px; flex: none; flex-direction: column; gap: 16px; padding: 14px 13px 14px; overflow: hidden; background: var(--sidebar); border-right: 1px solid #252525; transition: width .34s cubic-bezier(.22,1,.36,1), padding .34s cubic-bezier(.22,1,.36,1), border-color .2s ease; will-change: width; }
 .sidebar .search-box { margin-top: 10px; }
 .search-box { display: flex; align-items: center; gap: 8px; padding: 11.5px 11px; border: 1px solid #2c2c2c; border-radius: 11px; background: #191919; }
 .search-box:focus-within { border-color: #4a4a4a; }
@@ -68,7 +68,7 @@ svg { width: 17px; height: 17px; flex: none; fill: none; stroke: currentColor; s
 .search-box input::placeholder { color: #777; }
 kbd { padding: 1px 5px; color: #777; border: 1px solid #353535; border-radius: 4px; background: #232323; font: 11.5px var(--font); }
 .primary-nav { display: flex; flex-direction: column; gap: 2px; }
-.nav-row { display: flex; align-items: center; gap: 12px; min-height: 42px; padding: 0 12px; color: #858585; text-align: left; border: 1px solid transparent; border-radius: 9px; background: transparent; font-size: 14.5px; }
+.nav-row { display: flex; align-items: center; gap: 12px; min-height: 42px; padding: 0 12px; color: #858585; text-align: left; border: 1px solid transparent; border-radius: 9px; background: transparent; font-size: 14.5px; transition: color .16s ease, background .16s ease, border-color .16s ease, padding .3s cubic-bezier(.22,1,.36,1), gap .3s cubic-bezier(.22,1,.36,1); }
 .nav-row:hover, .nav-row.active { color: #ededed; border-color: rgba(255,255,255,.14); background: linear-gradient(165deg, rgba(255,255,255,.12), rgba(255,255,255,.02)); box-shadow: inset 0 1px 0 rgba(255,255,255,.2), inset 0 0 0 1px rgba(255,255,255,.03), 0 6px 16px rgba(0,0,0,.35); backdrop-filter: blur(10px); }
 .nav-row.active svg { color: #fff; }
 .newchat-btn { display: flex; align-items: center; gap: 12px; min-height: 44px; padding: 0 14px; color: #f0f0f0; border: 1px solid #3d3d3d; border-radius: 9px; background: #242424; font-size: 15px; font-weight: 700; }
@@ -627,6 +627,49 @@ kbd { padding: 1px 5px; color: #777; border: 1px solid #353535; border-radius: 4
 .model-menu-option { display: flex; align-items: center; gap: 9px; width: 100%; padding: 9px 8px; color: #bcbcbc; text-align: left; border: 1px solid transparent; border-radius: 10px; background: transparent; transition: color .15s ease, background .15s ease, border-color .15s ease, transform .15s ease; }
 .model-menu-option:hover, .model-menu-option.selected { color: #fff; border-color: rgba(255,255,255,.14); background: rgba(255,255,255,.08); transform: translateX(2px); }
 .model-option-icon { display: grid; width: 28px; height: 28px; place-items: center; flex: none; color: #cfcfcf; border-radius: 50%; background: rgba(255,255,255,.08); }
+/* ---------------------------------------------------------------------------
+   The collapsible sidebar
+   ---------------------------------------------------------------------------
+   One panel with two states: the full list, and a rail that keeps every
+   destination one icon away. The width is the only thing that travels; labels
+   fade out of its way and fade back in after it settles, so the conversation
+   widens as one movement instead of jumping. Everything below is scoped above
+   the drawer breakpoint: on a narrow screen the sidebar is a drawer, and a rail
+   would only be a second way to hide the same thing. */
+.sidebar-head { display: flex; align-items: center; gap: 8px; }
+.sidebar-head .sidebar-brand { flex: 1; min-width: 0; }
+.sidebar-toggle { display: grid; width: 34px; height: 32px; flex: none; place-items: center; color: #8a8a8a; border: 1px solid transparent; border-radius: 8px; background: transparent; transition: color .16s ease, background .16s ease, border-color .16s ease, width .3s cubic-bezier(.22,1,.36,1), height .3s cubic-bezier(.22,1,.36,1); }
+.sidebar-toggle:hover { color: #f0f0f0; border-color: #333; background: #1c1c1c; }
+.sidebar-toggle:focus-visible { color: #fff; outline: none; box-shadow: 0 0 0 2px rgba(184,255,0,.45); }
+.sidebar-toggle svg { width: 17px; height: 17px; }
+.sidebar-brand-copy, .nav-row span, .account-name, .account-btn .chev, .login-pill span, .search-box kbd { transition: opacity .16s ease, max-width .3s cubic-bezier(.22,1,.36,1), transform .3s cubic-bezier(.22,1,.36,1); }
+.sidebar .search-box { max-height: 60px; transition: max-height .34s cubic-bezier(.22,1,.36,1), opacity .16s ease, margin-top .34s ease, padding .34s ease, border-width .34s ease, visibility 0s; }
+.chat-groups, .sidebar-section-divider { transition: opacity .16s ease; }
+.account-btn, .login-pill { transition: padding .3s cubic-bezier(.22,1,.36,1), gap .3s cubic-bezier(.22,1,.36,1), width .3s cubic-bezier(.22,1,.36,1), min-height .3s cubic-bezier(.22,1,.36,1); }
+
+@media (min-width: 651px) {
+  .app.sidebar-collapsed .sidebar { width: 72px; gap: 8px; padding: 14px 10px; }
+  .app.sidebar-collapsed .sidebar-brand { max-width: 0; padding: 0; opacity: 0; overflow: hidden; pointer-events: none; }
+  .app.sidebar-collapsed .sidebar-head { justify-content: center; gap: 0; }
+  .app.sidebar-collapsed .sidebar-toggle { width: 42px; height: 40px; color: #dcdcdc; border-color: #303030; background: #181818; }
+  /* Hidden at the end of the travel, so the field leaves the tab order only once
+     it is out of sight, and comes back the moment the panel starts to open. */
+  .app.sidebar-collapsed .search-box { max-height: 0; margin-top: 0; padding-top: 0; padding-bottom: 0; border-width: 0; opacity: 0; pointer-events: none; visibility: hidden; transition: max-height .34s cubic-bezier(.22,1,.36,1), opacity .16s ease, margin-top .34s ease, padding .34s ease, border-width .34s ease, visibility 0s linear .34s; }
+  .app.sidebar-collapsed .nav-row { justify-content: center; gap: 0; padding: 0; }
+  .app.sidebar-collapsed .nav-row span,
+  .app.sidebar-collapsed .account-name,
+  .app.sidebar-collapsed .account-btn .chev,
+  .app.sidebar-collapsed .login-pill span { max-width: 0; opacity: 0; overflow: hidden; white-space: nowrap; transform: translateX(-6px); }
+  .app.sidebar-collapsed .chat-groups { opacity: 0; overflow: hidden; pointer-events: none; }
+  .app.sidebar-collapsed .sidebar-section-divider { opacity: 0; }
+  .app.sidebar-collapsed .account-btn { justify-content: center; gap: 0; padding: 7px 0; }
+  .app.sidebar-collapsed .login-pill { width: 46px; min-height: 42px; margin: 0 auto; gap: 0; }
+}
+
+@media (max-width: 650px) {
+  .sidebar-toggle { display: none; }
+}
+
 .model-option-icon svg { width: 14px; height: 14px; }
 .model-option-copy { display: flex; min-width: 0; flex: 1; flex-direction: column; gap: 2px; }
 .model-option-name { color: inherit; font-size: 12px; font-weight: 600; }
@@ -634,7 +677,7 @@ kbd { padding: 1px 5px; color: #777; border: 1px solid #353535; border-radius: 4
 .model-option-check { width: 14px; height: 14px; color: #d47af6; }
 .model-option-dot { width: 6px; height: 6px; margin-right: 4px; border-radius: 50%; background: #65606a; }
 .model-menu-empty { padding: 20px 8px; color: #777; text-align: center; font-size: 11px; }
-.sidebar-brand { display: flex; align-items: center; gap: 11px; width: 100%; padding: 4px 8px 2px; color: #eee; text-align: left; border: 0; background: transparent; }
+.sidebar-brand { display: flex; align-items: center; gap: 11px; width: 100%; padding: 4px 8px 2px; color: #eee; text-align: left; border: 0; background: transparent; transition: opacity .16s ease, max-width .3s cubic-bezier(.22,1,.36,1), padding .3s cubic-bezier(.22,1,.36,1); }
 .sidebar-brand:hover .sidebar-brand-copy b { color: #fff; }
 .sidebar-brand-mark { display: grid; width: 31px; height: 31px; place-items: center; gap: 2px; grid-template-columns: repeat(3, 5px); padding: 5px; border: 1px solid rgba(184,255,0,.22); border-radius: 9px; background: rgba(184,255,0,.08); }
 .sidebar-brand-mark i { display: block; width: 5px; height: 13px; border-radius: 4px; background: #b8ff00; transform: rotate(45deg); }

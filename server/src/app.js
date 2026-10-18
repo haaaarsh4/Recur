@@ -31,7 +31,11 @@ app.use((req, _res, next) => {
 });
 
 app.use(cors({ origin: CLIENT_ORIGIN, credentials: true }));
-app.use(express.json());
+// A guest request carries the conversation the browser holds, so the body is a
+// transcript rather than a single message. The default 100kb limit is enough for
+// the sample but not for a long chat, and a truncated body would look like a
+// missing chat instead of an oversized one.
+app.use(express.json({ limit: "1mb" }));
 app.use(cookieParser());
 
 // A standalone server can prepare the database before it starts listening. A

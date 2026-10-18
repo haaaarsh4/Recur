@@ -2,6 +2,7 @@ import { Router } from "express";
 import { db, syncToolCopy } from "../db.js";
 import { profileTask } from "../embeddings.js";
 import { identity } from "../middleware/auth.js";
+import { ensureDemoTool } from "../sample.js";
 
 const router = Router();
 
@@ -28,6 +29,11 @@ function hiddenSet(ownerId) {
 // store for anyone else.
 router.get("/", async (req, res) => {
   await db.read();
+  // Every visitor is shown the sample conversation, and its program is part of
+  // that conversation. The registry therefore has to be able to show it on
+  // whichever instance answers: a header counting zero programs next to a thread
+  // that says a program exists would contradict the screen it sits on.
+  await ensureDemoTool();
   let changed = false;
   for (const tool of db.data.tools) {
     const profile = profileTask(tool.sourceTasks?.[0] || tool.specification || "");

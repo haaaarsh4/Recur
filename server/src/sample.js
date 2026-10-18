@@ -253,23 +253,76 @@ function ensureSampleChat(ownerId, isGuest) {
   });
 }
 
+// The sample program, present in the store of whichever server is answering.
+//
+// A serverless host gives every instance its own store, so the program compiled
+// by the instance that served the chat list does not exist for the instance
+// that answers the next click. Compiling it is deterministic and takes about a
+// second, and it is the only program that has to exist for the sample to work,
+// so the routes that need it ask for it here before doing anything else. Once an
+// instance has it, this is a lookup, not a compile.
+function ensureDemoTool() {
+  const run = chain.then(async () => {
+    const had = livePalindromes().length > 0;
+    const tool = await ensureSampleTool();
+    if (tool && !had) await db.write();
+    return tool;
+  });
+  chain = run.then(
+    () => undefined,
+    () => undefined
+  );
+  return run.catch((e) => {
+    console.error("Sample program could not be prepared:", e?.message || e);
+    return null;
+  });
+}
+
+// An offer names the program it is about by id, and that id only means something
+// in the store that compiled it. A visitor can accept the sample's offer on an
+// instance that has never compiled anything, so the program is rebuilt and the
+// offer is pointed at it. This is only done when the rebuilt program can actually
+// answer the offer's own request: pointing an offer at a program that would
+// decline it would be worse than saying the program is gone.
+async function restoreToolForOffer(offer) {
+  if (!offer || offer.offerType !== "use") return false;
+  if (db.data.tools.some((tool) => tool.id === offer.toolId)) return false;
+  const tool = await ensureDemoTool();
+  if (!tool || !tool.program) return false;
+  let run;
+  try {
+    run = executeProgram(tool.program, offer.taskText);
+  } catch (e) {
+    return false;
+  }
+  if (!run.ok) return false;
+  offer.toolId = tool.id;
+  offer.toolName = tool.name;
+  offer.toolSpec = tool.specification;
+  offer.similarity = similarityFor(tool, offer.taskText);
+  offer.activation = gateScore(tool.neural, offer.taskText);
+  return true;
+}
+
 // Compiling the sample program takes a few seconds, and the first visitor should
 // not spend them watching an empty page. Boot calls this in the background so the
 // artifact is usually already in the registry by the time anyone asks for a chat
 // list. It shares the seed chain, because a boot compile racing a first request
 // would compile the program twice and write the store twice at once.
 function warmSample() {
-  const run = chain.then(async () => {
-    const had = livePalindromes().length > 0;
-    const tool = await ensureSampleTool();
-    if (tool && !had) await db.write();
-    return Boolean(tool);
-  });
-  chain = run.then(
-    () => undefined,
-    () => undefined
-  );
-  return run.catch(() => false);
+  return ensureDemoTool().then((tool) => Boolean(tool));
 }
 
-export { ensureSampleChat, ensureSampleTool, warmSample, DEMONSTRATIONS, THIRD_QUESTION, NEXT_QUESTION, TITLE, NOTE, SAMPLE_VERSION };
+export {
+  ensureSampleChat,
+  ensureSampleTool,
+  ensureDemoTool,
+  restoreToolForOffer,
+  warmSample,
+  DEMONSTRATIONS,
+  THIRD_QUESTION,
+  NEXT_QUESTION,
+  TITLE,
+  NOTE,
+  SAMPLE_VERSION,
+};

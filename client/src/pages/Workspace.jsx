@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { Bell, Menu, Puzzle } from "lucide-react";
 import { api } from "../api.js";
+import { readGuestChats, saveGuestChats, clearGuestChats, mergeGuestChats } from "../guestChats.js";
 import { useAuth } from "../state/AuthContext.jsx";
 import Sidebar from "../components/Sidebar.jsx";
 import ChatThread from "../components/ChatThread.jsx";
@@ -30,17 +31,52 @@ export default function Workspace() {
   const [authModal, setAuthModal] = useState(null); // null | "login" | "register"
   const [authError, setAuthError] = useState("");
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(readSidebarCollapsed);
   const [notifOpen, setNotifOpen] = useState(false);
   const [chatFading, setChatFading] = useState(false);
   const fadeRef = useRef(0);
   const notifRef = useRef(null);
   const autoOpenedRef = useRef(false);
+  // A guest's conversations are held here (see guestChats.js). A serverless host
+  // has no store shared by its instances, so the copy that travels with the next
+  // request is the only one that is always available.
+  const localChatsRef = useRef(null);
+  if (localChatsRef.current === null) {
+    localChatsRef.current = new Map(readGuestChats().map((chat) => [chat.id, chat]));
+  }
 
   useEffect(() => {
     function onDoc(e) { if (notifRef.current && !notifRef.current.contains(e.target)) setNotifOpen(false); }
     document.addEventListener("click", onDoc);
     return () => document.removeEventListener("click", onDoc);
   }, []);
+
+  // One panel, two states, one way in and out. On a wide screen the sidebar
+  // collapses to a rail of icons; on a narrow one it is a drawer that is either
+  // open or not, so the same shortcut does what that screen can actually show.
+  const toggleSidebar = useCallback(() => {
+    if (window.matchMedia(NARROW_SIDEBAR).matches) {
+      setMobileNavOpen((open) => !open);
+      return;
+    }
+    setSidebarCollapsed((collapsed) => {
+      writeSidebarCollapsed(!collapsed);
+      return !collapsed;
+    });
+  }, []);
+
+  // Ctrl+B on Windows and Linux, Cmd+B on a Mac, like every app that has a
+  // sidebar. The browser's own bindings are left alone: no Alt, no Shift.
+  useEffect(() => {
+    function onKeyDown(event) {
+      if (!(event.ctrlKey || event.metaKey) || event.altKey || event.shiftKey) return;
+      if (event.key.toLowerCase() !== "b") return;
+      event.preventDefault();
+      toggleSidebar();
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [toggleSidebar]);
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -53,8 +89,24 @@ export default function Workspace() {
   }, []);
 
   const refreshChats = useCallback(() => {
-    api.listChats().then(setChats).catch(() => setChats([]));
-  }, []);
+    api
+      .listChats()
+      .then((list) => {
+        if (user) {
+          setChats(list);
+          return;
+        }
+        const merged = mergeGuestChats(list, [...localChatsRef.current.values()]);
+        setChats(merged);
+        // Keep every conversation that arrived with the list (the sample does),
+        // so a reload in this session does not have to ask a possibly different
+        // instance for it.
+        const kept = merged.filter((chat) => Array.isArray(chat.messages));
+        localChatsRef.current = new Map(kept.map((chat) => [chat.id, chat]));
+        saveGuestChats(kept);
+      })
+      .catch(() => setChats(user ? [] : [...localChatsRef.current.values()]));
+  }, [user]);
   const refreshTools = useCallback(() => {
     api.listTools().then(setTools).catch(() => {});
   }, []);
@@ -75,6 +127,14 @@ export default function Workspace() {
     refreshStats();
   }, [loading, user, refreshChats, refreshTools, refreshStats]);
 
+  // Once there is an account, its history is the server's. A guest copy left in
+  // this browser is not needed, and must never shadow the account's own chats.
+  useEffect(() => {
+    if (!user) return;
+    localChatsRef.current = new Map();
+    clearGuestChats();
+  }, [user?.id]);
+
   // A first-time visitor lands in the sample conversation, so the project can be
   // understood before they type anything and while the model backend may be
   // unreachable. It happens once per browser and never again: after that the
@@ -87,6 +147,19 @@ export default function Workspace() {
     markSampleSeen();
     openChat(sample.id, "pinned");
   }, [loading, chats, activeChat]);
+
+  // The guest's copy is what the next request carries, so every conversation the
+  // browser has seen is kept up to date as replies arrive.
+  function rememberChat(chat) {
+    if (user || !chat || !Array.isArray(chat.messages)) return;
+    localChatsRef.current.set(chat.id, chat);
+    saveGuestChats([...localChatsRef.current.values()]);
+  }
+
+  function forgetChat(id) {
+    if (!localChatsRef.current.delete(id)) return;
+    saveGuestChats([...localChatsRef.current.values()]);
+  }
 
   // Chat switching uses one single opacity fade: the current view fades out,
   // content swaps while fully transparent, then the new view fades in. Because
@@ -103,6 +176,7 @@ export default function Workspace() {
     if (chat) {
       setActiveChat(chat);
       setActiveSource(source);
+      rememberChat(chat);
     } else {
       setActiveChat(null);
       setActiveSource(null);
@@ -118,7 +192,11 @@ export default function Workspace() {
       setMobileNavOpen(false);
       return;
     }
-    swapChat(() => api.getChat(id), source).catch((e) => {
+    // Most opens need no request: a guest chat is already here, and the sample
+    // arrives with the list. That is what keeps a click working when the next
+    // request would be answered by an instance that has never seen the chat.
+    const known = (!user && localChatsRef.current.get(id)) || chats.find((chat) => chat.id === id && Array.isArray(chat.messages));
+    swapChat(() => (known ? Promise.resolve(known) : api.getChat(id)), source).catch((e) => {
       if (e) setError(e.message || "Could not open that chat.");
       setChatFading(false);
     });
@@ -128,6 +206,7 @@ export default function Workspace() {
     swapChat(() => Promise.resolve(null), null).catch(() => setChatFading(false));
   }
   async function deleteChat(id) {
+    forgetChat(id);
     await api.deleteChat(id);
     if (activeChat?.id === id) {
       setActiveChat(null);
@@ -142,10 +221,12 @@ export default function Workspace() {
     if (!chat) {
       chat = await api.createChat(text);
       setActiveChat(chat);
+      rememberChat(chat);
     }
     try {
-      const { chat: updated } = await api.sendMessage(chat.id, text, tier);
+      const { chat: updated } = await api.sendMessage(chat.id, text, tier, user ? null : chat);
       setActiveChat(updated);
+      rememberChat(updated);
       refreshChats();
       refreshTools();
       refreshStats();
@@ -160,8 +241,9 @@ export default function Workspace() {
     if (!activeChat) return;
     setError("");
     try {
-      const { chat: updated } = await api.retryMessage(activeChat.id, tier);
+      const { chat: updated } = await api.retryMessage(activeChat.id, tier, user ? null : activeChat);
       setActiveChat(updated);
+      rememberChat(updated);
       refreshChats();
       refreshTools();
       refreshStats();
@@ -174,8 +256,9 @@ export default function Workspace() {
   async function resolveOffer(messageId, action) {
     setError("");
     try {
-      const { chat: updated } = await api.resolveOffer(activeChat.id, messageId, action, tier);
+      const { chat: updated } = await api.resolveOffer(activeChat.id, messageId, action, tier, user ? null : activeChat);
       setActiveChat(updated);
+      rememberChat(updated);
       refreshChats();
       refreshTools();
       refreshStats();
@@ -214,9 +297,11 @@ export default function Workspace() {
   }
 
   return (
-    <div className="app">
+    <div className={"app" + (sidebarCollapsed ? " sidebar-collapsed" : "")}>
       <Sidebar
         view={view}
+        collapsed={sidebarCollapsed}
+        onToggleCollapsed={toggleSidebar}
         onChangeView={(v) => { setView(v); setMobileNavOpen(false); }}
         tiers={TIERS}
         tier={tier}
@@ -297,6 +382,27 @@ export default function Workspace() {
 
 const FADE_OUT_MS = 180;
 const SAMPLE_SEEN_KEY = "recur:sample-seen";
+const SIDEBAR_KEY = "recur:sidebar-collapsed";
+const NARROW_SIDEBAR = "(max-width: 650px)";
+
+// The sidebar's state is a preference, not session data: it is remembered across
+// visits, and the first paint already has it, so there is no flash of a panel
+// the visitor had put away.
+function readSidebarCollapsed() {
+  try {
+    return localStorage.getItem(SIDEBAR_KEY) === "1";
+  } catch (e) {
+    return false;
+  }
+}
+
+function writeSidebarCollapsed(collapsed) {
+  try {
+    localStorage.setItem(SIDEBAR_KEY, collapsed ? "1" : "0");
+  } catch (e) {
+    // Private modes can refuse storage; the panel still toggles for this visit.
+  }
+}
 
 function wait(ms) {
   return new Promise((resolve) => window.setTimeout(resolve, ms));

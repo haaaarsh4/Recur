@@ -3,7 +3,8 @@ import { nanoid } from "nanoid";
 import { identity } from "../middleware/auth.js";
 import { db } from "../db.js";
 import { processTask, resolveOffer, msg } from "../engine.js";
-import { ensureSampleChat } from "../sample.js";
+import { ensureDemoTool, ensureSampleChat, restoreToolForOffer } from "../sample.js";
+import { guestChatFrom } from "../guestchat.js";
 import { decryptSecret } from "../secrets.js";
 
 const router = Router();
@@ -40,10 +41,16 @@ router.get("/", async (req, res) => {
   if (seeded) {
     await db.write();
   }
+  // The list omits message bodies, with one exception: the sample is a fixture,
+  // and it is delivered whole. Opening it then needs no further request, so the
+  // conversation on screen never depends on which instance answers the next
+  // click. On a serverless host every instance has its own store, and a chat
+  // that exists only in one instance's store would otherwise come back as
+  // "Chat not found" the moment a different instance answered.
   const chats = db.data.chats
     .filter((c) => c.userId === req.ownerId)
     .sort((a, b) => b.updatedAt - a.updatedAt)
-    .map(({ messages, awaiting, ...rest }) => rest); // list view omits message bodies
+    .map(({ messages, awaiting, ...rest }) => (rest.sample ? { ...rest, messages } : rest));
   res.json(chats);
 });
 
@@ -81,9 +88,7 @@ router.delete("/:id", async (req, res) => {
 });
 
 router.post("/:id/messages", async (req, res) => {
-  await db.read();
-  await cleanupGuestChats();
-  const chat = findChat(req);
+  const chat = await chatFor(req);
   if (!chat) return res.status(404).json({ error: "Chat not found." });
 
   const text = (req.body?.text || "").trim();
@@ -109,6 +114,11 @@ router.post("/:id/messages", async (req, res) => {
   }
 
   try {
+    // The sample's program is the evidence that reuse costs no model call. An
+    // instance that has never compiled it would send a visitor's own palindrome
+    // question to the model instead, which is the exact dependency the sample
+    // exists to show is unnecessary. Once the instance has it, this is a lookup.
+    await ensureDemoTool();
     const newMessages = directOfferAction
       ? await resolveOffer(chat, [...chat.messages].reverse().find((item) => item.kind === "offer" && !item.resolved), directOfferAction, tier, credsFor(req))
       : await processTask(chat, effective, tier, credsFor(req));
@@ -127,9 +137,7 @@ router.post("/:id/messages", async (req, res) => {
 // Regenerate the reply to the most recent user message: drop everything after
 // it and run the pipeline again, like the retry arrow in other chat apps.
 router.post("/:id/retry", async (req, res) => {
-  await db.read();
-  await cleanupGuestChats();
-  const chat = findChat(req);
+  const chat = await chatFor(req);
   if (!chat) return res.status(404).json({ error: "Chat not found." });
 
   const tier = TIERS.includes(req.body?.tier) ? req.body.tier : "default";
@@ -155,9 +163,7 @@ router.post("/:id/retry", async (req, res) => {
 });
 
 router.post("/:id/offers/:messageId/resolve", async (req, res) => {
-  await db.read();
-  await cleanupGuestChats();
-  const chat = findChat(req);
+  const chat = await chatFor(req);
   if (!chat) return res.status(404).json({ error: "Chat not found." });
   const offerMsg = chat.messages.find((m) => m.id === req.params.messageId);
   if (!offerMsg || offerMsg.kind !== "offer") return res.status(404).json({ error: "That offer no longer exists." });
@@ -170,6 +176,11 @@ router.post("/:id/offers/:messageId/resolve", async (req, res) => {
   }
 
   try {
+    // An offer names its program by id, and that id only means something in the
+    // store that compiled it. When this instance has never compiled it, the
+    // program the sample is about is rebuilt and the offer is pointed at the
+    // rebuilt copy, so "Run palindrome-checker" is a local run on any instance.
+    if (action === "use") await restoreToolForOffer(offerMsg);
     const newMessages = await resolveOffer(chat, offerMsg, action, tier, credsFor(req));
     chat.messages.push(...newMessages);
     trimChat(chat);
@@ -181,6 +192,21 @@ router.post("/:id/offers/:messageId/resolve", async (req, res) => {
     res.status(errStatus(e)).json({ error: errMessage(e), chat });
   }
 });
+
+// The chat this request is about: from this instance's store, or, for a guest,
+// from the copy the browser sent with the request. A serverless host gives every
+// instance its own store, so "not in my store" cannot be allowed to mean "does
+// not exist" for a conversation the visitor is looking at.
+async function chatFor(req) {
+  await db.read();
+  await cleanupGuestChats();
+  const stored = findChat(req);
+  // A signed-in account's history is the server's, always. A guest's copy can be
+  // newer than this instance's (another instance answered the last message) or
+  // unknown to it (another instance created the chat), so the copy is applied.
+  if (stored && !req.isGuest) return stored;
+  return guestChatFrom(req) || stored;
+}
 
 function findChat(req) {
   return db.data.chats.find((c) => c.id === req.params.id && c.userId === req.ownerId);

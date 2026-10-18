@@ -5,6 +5,8 @@ import {
   LogIn,
   LogOut,
   MessageCircle,
+  PanelLeftClose,
+  PanelLeftOpen,
   Pin,
   Puzzle,
   Search,
@@ -19,6 +21,7 @@ export default function Sidebar({
   chats, activeId, activeSource, onSelectChat, onNewChat, onDeleteChat,
   user, onLogout, onOpenAuth,
   mobileOpen, onCloseMobile,
+  collapsed, onToggleCollapsed,
 }) {
   const [query, setQuery] = useState("");
   const [accountOpen, setAccountOpen] = useState(false);
@@ -75,24 +78,40 @@ export default function Sidebar({
   return (
     <>
       {mobileOpen && <div className="sidebar-scrim" onClick={onCloseMobile} />}
-      <aside className={"sidebar" + (mobileOpen ? " open" : "")}>
+      <aside className={"sidebar" + (mobileOpen ? " open" : "")} id="recur-sidebar">
         <button className="sidebar-mobile-close" type="button" onClick={onCloseMobile} aria-label="Close menu"><X /></button>
-        <button className="sidebar-brand" type="button" onClick={() => onChangeView("home")} aria-label="Go to Recur home">
-          <span className="sidebar-brand-mark" aria-hidden="true"><i /><i /><i /></span>
-          <span className="sidebar-brand-copy"><b>Recur<span>.</span></b><small>Workspace</small></span>
-        </button>
+        <div className="sidebar-head">
+          <button className="sidebar-brand" type="button" onClick={() => onChangeView("home")} aria-label="Go to Recur home">
+            <span className="sidebar-brand-mark" aria-hidden="true"><i /><i /><i /></span>
+            <span className="sidebar-brand-copy"><b>Recur<span>.</span></b><small>Workspace</small></span>
+          </button>
+          {/* The one control for the rail. It is a labelled button, not an icon
+              strip, so the panel can be put away and brought back with a mouse,
+              a keyboard, or Ctrl+B, and screen readers get the state with it. */}
+          <button
+            className="sidebar-toggle"
+            type="button"
+            onClick={onToggleCollapsed}
+            title={collapsed ? "Expand sidebar (Ctrl+B)" : "Collapse sidebar (Ctrl+B)"}
+            aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+            aria-expanded={!collapsed}
+            aria-controls="recur-sidebar"
+          >
+            {collapsed ? <PanelLeftOpen /> : <PanelLeftClose />}
+          </button>
+        </div>
 
         <div className="search-box">
           <Search />
-          <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search" />
+          <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search" aria-label="Search chats" />
           <kbd>/</kbd>
         </div>
 
         <nav className="primary-nav" aria-label="Primary navigation">
-          <button className={"nav-row" + (view === "home" ? " active" : "")} type="button" onClick={() => onChangeView("home")}><Home /> <span>Home</span></button>
+          <button className={"nav-row" + (view === "home" ? " active" : "")} type="button" onClick={() => onChangeView("home")} title="Home"><Home /> <span>Home</span></button>
           <button className={"nav-row new-chat-row" + (view === "chat" && !activeId ? " active" : "")} type="button" onClick={onNewChat} title="Start a new chat"><SquarePen /> <span>New chat</span></button>
           <button className={"nav-row" + (view === "tools" ? " active" : "")} type="button" onClick={() => onChangeView("tools")} title="Reusable tools compiled from your chats"><Puzzle /> <span>Tool Registry</span></button>
-          <button className={"nav-row" + (view === "integrations" ? " active" : "")} type="button" onClick={() => onChangeView("integrations")}><Settings2 /> <span>Integrations</span></button>
+          <button className={"nav-row" + (view === "integrations" ? " active" : "")} type="button" onClick={() => onChangeView("integrations")} title="Integrations"><Settings2 /> <span>Integrations</span></button>
         </nav>
 
         <div className="sidebar-section-divider" aria-hidden="true" />
@@ -123,7 +142,7 @@ export default function Sidebar({
         <div className="account-row" ref={accountRef}>
           {user ? (
             <>
-              <button className="account-btn" type="button" onClick={() => setAccountOpen((value) => !value)}>
+              <button className="account-btn" type="button" onClick={() => setAccountOpen((value) => !value)} title={user.name}>
                 <span className="avatar">{(user.name || "?")[0].toUpperCase()}</span>
                 <span className="account-name">{user.name}</span>
                 <ChevronDown className="chev" />
@@ -131,7 +150,7 @@ export default function Sidebar({
               {accountOpen && <div className="account-menu"><button type="button" onClick={onLogout}><LogOut /> Log out</button></div>}
             </>
           ) : (
-            <button className="login-pill" type="button" onClick={() => onOpenAuth("login")}><LogIn /> Log In</button>
+            <button className="login-pill" type="button" onClick={() => onOpenAuth("login")} title="Log in"><LogIn /> <span>Log In</span></button>
           )}
         </div>
       </aside>

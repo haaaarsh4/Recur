@@ -48,10 +48,14 @@ export const api = {
   createChat: (title) => request("/chats", { method: "POST", body: { title } }),
   getChat: (id) => request(`/chats/${id}`),
   deleteChat: (id) => request(`/chats/${id}`, { method: "DELETE" }),
-  sendMessage: (id, text, tier) => request(`/chats/${id}/messages`, { method: "POST", body: { text, tier } }),
-  retryMessage: (id, tier) => request(`/chats/${id}/retry`, { method: "POST", body: { tier } }),
-  resolveOffer: (chatId, messageId, action, tier) =>
-    request(`/chats/${chatId}/offers/${messageId}/resolve`, { method: "POST", body: { action, tier } }),
+  // A guest's conversation lives in the browser (see guestChats.js), so the copy
+  // travels with the request. The server uses it only when the instance that got
+  // the request has never seen the chat; a signed-in account's history is never
+  // taken from a request body.
+  sendMessage: (id, text, tier, chat) => request(`/chats/${id}/messages`, { method: "POST", body: { text, tier, chat } }),
+  retryMessage: (id, tier, chat) => request(`/chats/${id}/retry`, { method: "POST", body: { tier, chat } }),
+  resolveOffer: (chatId, messageId, action, tier, chat) =>
+    request(`/chats/${chatId}/offers/${messageId}/resolve`, { method: "POST", body: { action, tier, chat } }),
 
   // Clearing the shared registry is a personal view change: these hide programs
   // for this browser and leave everybody else's registry untouched.
