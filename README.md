@@ -4,6 +4,8 @@
 
 Recur is not a better chatbot. It is an experiment in a different division of labour between a language model and a machine. A model is good at producing language and bad at being reliably right. So in Recur the model supplies *phrasing* and *candidate tasks*, while arithmetic, string handling and decisions about what is true are handed to a small compiler that produces an ordinary, inspectable, deterministic program.
 
+Recur was inspired by the work of [Yuntian Deng](https://yuntiandeng.com) and his group at the University of Waterloo, in particular their ProgramAsWeights project and his essay "From AI as Problem Solver to AI as Tool Builder". Their central idea, that a model should compile a repeated task into a small reusable program instead of solving it from scratch every time, is the idea this project sets out to explore.
+
 <p align="center">
   <img src="docs/figures/01-why.png" alt="Every time from scratch versus compiled once and run forever" width="100%">
 </p>
@@ -13,6 +15,16 @@ Ask it the same kind of question a few times and it will notice, ask permission 
 The interesting part of the project is not the chat interface. It is the pipeline behind it: how a repeated request becomes a specification, how noisy model answers are turned into evidence, and how the system decides what that evidence is allowed to conclude.
 
 A first visit opens one prepared conversation, pinned at the top of the sidebar and labelled as a sample: two palindrome questions answered by the model, a third one compiled into a reusable program and answered by that program locally, and a fourth one left on Recur's own offer, so the next click is the visitor's. It is a normal chat, and everyone who opens this app gets their own copy of it, which is how the project can be understood on a machine where no model is reachable.
+
+---
+
+## Inspiration
+
+This project grew out of a question Yuntian Deng has been asking in public for a while: what if AI systems built tools for the tasks we repeat, instead of treating every request as a brand new problem? His group's [ProgramAsWeights](https://programasweights.com) work answers that by compiling natural-language function specifications into small neural programs that can be reused. His essay "From AI as Problem Solver to AI as Tool Builder" makes the broader case that teaching models to compile repeated work into reusable programs is one of the most promising directions in the field. Reading it changed how I thought about what a chat workspace could be for.
+
+Recur takes that same instinct in a different direction. Where ProgramAsWeights compiles into neural programs, Recur compiles the user's own repeated requests into small symbolic programs found by search, which can be inspected, verified against the evidence and executed deterministically. The trade-offs are different, and the questions this raises (what a handful of demonstrations is allowed to conclude, and how to refuse when the evidence is not enough) are the ones the rest of this document is about.
+
+I am grateful for the clarity and generosity of that work. Any mistakes, oversimplifications or wrong turns in Recur are entirely mine, and this project is an independent exploration that is not affiliated with or endorsed by Professor Deng or his group.
 
 ---
 
@@ -257,7 +269,3 @@ Two caveats worth knowing before pointing someone at a deployment:
 
 - **Storage is per instance and temporary on serverless hosts.** A Vercel function mounts the project read-only, so the database lands in the system temp directory: every warm instance has its own registry, and a redeploy wipes it. A shared registry needs a real store.
 - **The default model runs on your machine.** Ollama needs a tunnel or a provider key added after the first deploy. Compiled programs keep answering regardless, which is the simplest way to show that they are not calling anything.
-
-## 17. Credits
-
-The figures in this document are generated from `docs/figures/` with Pillow, using two OFL-licensed families from Google Fonts: [Shantell Sans](https://fonts.google.com/specimen/Shantell+Sans) for the handwritten text and [Space Mono](https://fonts.google.com/specimen/Space+Mono) for tags and code-shaped labels.
